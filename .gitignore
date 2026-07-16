@@ -22,6 +22,7 @@ migrate_working_dir/
 .dart_tool/
 .packages
 build/
+.gradle/
 # plugin เป็น library — lock file ปล่อยให้ app ผู้ใช้เป็นคนตรึงเวอร์ชัน
 pubspec.lock
 
