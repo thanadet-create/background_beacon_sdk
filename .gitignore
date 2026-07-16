@@ -1,0 +1,29 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Flutter/Dart/Pub related
+.dart_tool/
+.packages
+build/
+# plugin เป็น library — lock file ปล่อยให้ app ผู้ใช้เป็นคนตรึงเวอร์ชัน
+pubspec.lock
+
+# ค่า config ประจำเครื่อง dev (ngrok URL หมุนได้) — copy จาก dev.json.example
+example/config/dev.json
