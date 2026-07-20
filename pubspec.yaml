@@ -1,6 +1,6 @@
 name: background_beacon_sdk
 description: Flutter SDK for detecting BLE beacons in background on iOS, Android (GMS) and Huawei (HMS) devices.
-version: 0.0.1
+version: 0.0.2
 publish_to: none
 
 environment:
