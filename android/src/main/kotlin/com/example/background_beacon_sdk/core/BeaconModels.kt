@@ -88,7 +88,9 @@ data class BeaconData(
 }
 
 data class BeaconEventData(
-    // Must match the Dart enum names exactly: "enterRegion" | "exitRegion" | "ranged"
+    // Must match the Dart enum names exactly: "enterRegion" | "exitRegion" |
+    // "ranged" | "monitoringPaused" | "monitoringResumed" (pause/resume carry
+    // region = "" and no beacons — they describe the whole session)
     val type: String,
     val region: String,
     val beacons: List<BeaconData>,

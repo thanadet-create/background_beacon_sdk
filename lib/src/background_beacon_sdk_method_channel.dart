@@ -5,7 +5,7 @@ import 'package:background_beacon_sdk/src/models/scan_settings.dart';
 import 'package:flutter/services.dart';
 
 class MethodChannelBackgroundBeacon extends BackgroundBeaconPlatform {
-  /// Dart → native: detect / permission / start / stop / detectBeacon
+  /// Dart → native: detect / permission / start / stop
   static const MethodChannel _methodChannel =
       MethodChannel('background_beacon_sdk/methods');
 
@@ -51,16 +51,6 @@ class MethodChannelBackgroundBeacon extends BackgroundBeaconPlatform {
   @override
   Future<void> stopMonitoring() async {
     await _methodChannel.invokeMethod('stopMonitoring');
-  }
-
-  @override
-  Future<bool> detectBeacon(BeaconRegion region) async {
-    final detected = await _methodChannel.invokeMethod<bool>(
-      'detectBeacon',
-      region.toMap(),
-    );
-
-    return detected ?? false;
   }
 
   @override

@@ -44,6 +44,8 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
     private var tracker: RegionStateTracker? = null
     private var listener: ((BeaconEventData) -> Unit)? = null
     private var scanning = false
+    /** Paused from the notification button — session alive, radios quiet */
+    private var paused = false
     private var callbackScanActive = false
     private var pendingIntentScanActive = false
 
@@ -103,6 +105,9 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         // when the app reopens.
         if (settings.foregroundServiceNotification) {
             BeaconForegroundService.start(context)
+            // Notification button routes back here — the service holds no
+            // scan knowledge (its class doc), the decision stays in this class
+            BeaconForegroundService.onToggle = { setPaused(!paused) }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startPendingIntentScan(settings)
@@ -116,8 +121,10 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
     override fun stopMonitoring() {
         if (!scanning) return
         scanning = false
+        paused = false
 
-        // Never removeCallbacksAndMessages(null) — it would kill detectBeacon's timeout too
+        // Remove only our runnables — removeCallbacksAndMessages(null) would
+        // sweep every queued post on the shared main handler
         mainHandler.removeCallbacks(startCycleRunnable)
         mainHandler.removeCallbacks(endCycleRunnable)
         mainHandler.removeCallbacks(exitCheckRunnable)
@@ -141,45 +148,10 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         settings = null
     }
 
-    override fun detectBeacon(
-        region: BeaconRegionData,
-        timeoutMs: Long,
-        callback: (Boolean) -> Unit,
-    ) {
-        val scanner = bleScanner ?: return mainHandler.post { callback(false) }.let { }
-
-        // Temporary scan with its own callback — never touches the main
-        // monitoring scan. Every decision (found/timeout) is posted to the
-        // main thread to prevent a binder-thread vs timeout race — `done`
-        // is read/written on main only.
-        var done = false
-        lateinit var oneShot: ScanCallback
-        oneShot = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val beacon = BeaconParser.parse(result) ?: return
-                if (!region.matches(beacon.uuid, beacon.major, beacon.minor)) return
-                mainHandler.post {
-                    if (done) return@post
-                    done = true
-                    scanner.stopScan(oneShot)
-                    callback(true)
-                }
-            }
-        }
-
-        scanner.startScan(BeaconParser.scanFilters(), lowLatency(), oneShot)
-        mainHandler.postDelayed({
-            if (done) return@postDelayed
-            done = true
-            scanner.stopScan(oneShot)
-            callback(false)
-        }, timeoutMs)
-    }
-
     // ---- scan result entry point (always main thread) ----
 
     private fun processResult(result: ScanResult) {
-        if (!scanning) return // stale result in the pipe after stop — drop
+        if (!scanning || paused) return // stale result in the pipe after stop/pause — drop
         val beacon = BeaconParser.parse(result) ?: return
         val region = regions.firstOrNull {
             it.matches(beacon.uuid, beacon.major, beacon.minor)
@@ -266,6 +238,68 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         pendingIntentScanActive = true
     }
 
+    // ---- pause/resume (notification button, FGS mode only) ----
+
+    /**
+     * Suspend/resume scanning while the session (service + notification +
+     * regions/settings) stays alive — a real stop would tear the
+     * notification down and leave nowhere to press start.
+     *
+     * Resume restarts region state from scratch: beacons still in range
+     * re-fire enterRegion once (same semantics as a headless restart).
+     * While paused the PendingIntent scan is unregistered, so a process
+     * kill leaves scanning off until the app reopens.
+     */
+    private fun setPaused(value: Boolean) {
+        if (!scanning || paused == value) return
+        val s = settings ?: return
+        paused = value
+
+        if (value) {
+            mainHandler.removeCallbacks(startCycleRunnable)
+            mainHandler.removeCallbacks(endCycleRunnable)
+            mainHandler.removeCallbacks(exitCheckRunnable)
+            if (callbackScanActive) {
+                bleScanner?.stopScan(scanCallback)
+                callbackScanActive = false
+            }
+            if (pendingIntentScanActive) {
+                ScanSession.resultHandler = null
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    PendingIntentScan.stop(context)
+                }
+                pendingIntentScanActive = false
+            }
+            cycleSightings.clear()
+            lastSeenBeaconCount = 0
+            emit(BeaconEventData("monitoringPaused", "", emptyList()))
+        } else {
+            tracker = RegionStateTracker(s.exitTimeoutMs)
+            BeaconStore.clearInsideState(context)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startPendingIntentScan(s)
+                } else {
+                    startScanCycle()
+                }
+            } catch (e: IllegalStateException) {
+                // Bluetooth went off while paused — this runs from the
+                // notification tap with no caller to catch, so stay paused
+                // and say why instead of throwing (= app crash)
+                paused = true
+                BeaconForegroundService.update(
+                    context,
+                    "Bluetooth ปิดอยู่ — เปิดแล้วแตะ เริ่มสแกน",
+                    true,
+                )
+                return
+            }
+            mainHandler.postDelayed(exitCheckRunnable, EXIT_CHECK_MS)
+            emit(BeaconEventData("monitoringResumed", "", emptyList()))
+        }
+        updateServiceStatus()
+    }
+
     // ---- exit detection (all modes) ----
 
     private val exitCheckRunnable = object : Runnable {
@@ -287,12 +321,14 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
     private fun updateServiceStatus() {
         if (settings?.foregroundServiceNotification != true) return
         val inside = tracker?.insideRegions().orEmpty()
-        val text = if (inside.isEmpty()) {
+        val text = if (paused) {
+            "หยุดสแกนชั่วคราว"
+        } else if (inside.isEmpty()) {
             "กำลังหา beacon…"
         } else {
             "อยู่ในเขต ${inside.sorted().joinToString(", ")} · เห็น $lastSeenBeaconCount beacon"
         }
-        BeaconForegroundService.update(context, text)
+        BeaconForegroundService.update(context, text, paused)
     }
 
     private fun now(): Long = System.currentTimeMillis()

@@ -50,9 +50,6 @@ class MockPlatform extends BackgroundBeaconPlatform
   }
 
   @override
-  Future<bool> detectBeacon(BeaconRegion region) async => true;
-
-  @override
   Future<void> registerBackgroundCallback(
       int dispatcherHandle, int callbackHandle) async {
     lastDispatcherHandle = dispatcherHandle;
@@ -117,7 +114,6 @@ void main() {
       expect(() => manager.startMonitoring([region], settings),
           throwsStateError);
       expect(() => manager.stopMonitoring(), throwsStateError);
-      expect(() => manager.detectBeacon(region), throwsStateError);
       expect(() => manager.onBeaconEvent, throwsStateError);
     });
   });

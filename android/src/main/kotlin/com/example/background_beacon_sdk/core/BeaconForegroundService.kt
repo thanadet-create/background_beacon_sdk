@@ -3,9 +3,11 @@ package com.example.background_beacon_sdk.core
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 
@@ -29,6 +31,13 @@ class BeaconForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Notification button tap — the service is already foreground
+        // (the button only exists on a live notification), so no
+        // startForeground here: just hand the toggle to the scanner.
+        if (intent?.action == ACTION_TOGGLE) {
+            onToggle?.invoke()
+            return START_NOT_STICKY
+        }
         startForeground(NOTIFICATION_ID, build(this, DEFAULT_TEXT))
         running = true
         // The system may restart a killed service, but scan state died with
@@ -47,10 +56,22 @@ class BeaconForegroundService : Service() {
         private const val CHANNEL_ID = "background_beacon_sdk"
         private const val NOTIFICATION_ID = 57111
         private const val DEFAULT_TEXT = "กำลังหา beacon…"
+        private const val ACTION_TOGGLE = "com.example.background_beacon_sdk.TOGGLE_SCAN"
 
         /** Is the service holding the notification — [update] before start would post a stray one */
         @Volatile
         private var running = false
+
+        /**
+         * Set by the scanner while it monitors in FGS mode, cleared on stop —
+         * the service itself knows nothing about scanning (see class doc),
+         * so the pause/resume decision stays in BleBeaconScanner.
+         * Invoked on the main thread (service callbacks run there).
+         */
+        var onToggle: (() -> Unit)? = null
+
+        /** Display state for the button label — the scanner reports it via [update] */
+        private var paused = false
 
         fun start(context: Context) {
             val intent = Intent(context, BeaconForegroundService::class.java)
@@ -63,6 +84,8 @@ class BeaconForegroundService : Service() {
 
         fun stop(context: Context) {
             running = false
+            paused = false
+            onToggle = null
             context.stopService(Intent(context, BeaconForegroundService::class.java))
         }
 
@@ -70,9 +93,11 @@ class BeaconForegroundService : Service() {
          * Update the text on the same notification (one id = replace, not
          * stack) — safe to call often. IMPORTANCE_LOW means no sound or
          * re-alert; the user just sees the text change.
+         * [isPaused] flips the action button label (stop ↔ start).
          */
-        fun update(context: Context, text: String) {
+        fun update(context: Context, text: String, isPaused: Boolean = false) {
             if (!running) return
+            paused = isPaused
             (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .notify(NOTIFICATION_ID, build(context, text))
         }
@@ -95,15 +120,41 @@ class BeaconForegroundService : Service() {
                 Notification.Builder(context)
             }
 
+            // Tap routes back into this service — a notification action is
+            // exempt from background-start restrictions (user interaction),
+            // and plain getService carries no new startForeground obligation.
+            val toggleIntent = PendingIntent.getService(
+                context,
+                0,
+                Intent(context, BeaconForegroundService::class.java).setAction(ACTION_TOGGLE),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val toggleLabel = if (paused) "เริ่มสแกน" else "หยุดสแกน"
+
             // The plugin ships no drawable — borrow the host app's icon
-            return builder
+            builder
                 .setSmallIcon(context.applicationInfo.icon)
                 .setContentTitle("Beacon monitoring")
                 .setContentText(text)
                 .setOngoing(true)
                 // Prevents flicker on frequent updates
                 .setOnlyAlertOnce(true)
-                .build()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                builder.addAction(
+                    Notification.Action.Builder(
+                        // Action icons are not rendered on modern Android but
+                        // the builder demands one — reuse the app icon
+                        Icon.createWithResource(context, context.applicationInfo.icon),
+                        toggleLabel,
+                        toggleIntent,
+                    ).build(),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                builder.addAction(context.applicationInfo.icon, toggleLabel, toggleIntent)
+            }
+            return builder.build()
         }
     }
 }

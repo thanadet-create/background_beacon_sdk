@@ -58,18 +58,6 @@ public class BackgroundBeaconSdkPlugin: NSObject, FlutterPlugin, FlutterStreamHa
             monitor.stopMonitoring()
             result(nil)
 
-        case "detectBeacon":
-            guard let args = call.arguments as? [String: Any?],
-                  let region = BeaconRegionData(map: args)
-            else {
-                result(FlutterError(
-                    code: "DETECT_FAILED", message: "Invalid region", details: nil))
-                return
-            }
-            monitor.detectBeacon(region: region, timeoutMs: Self.detectTimeoutMs) { found in
-                result(found)
-            }
-
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -139,6 +127,5 @@ public class BackgroundBeaconSdkPlugin: NSObject, FlutterPlugin, FlutterStreamHa
         return nil
     }
 
-    private static let detectTimeoutMs = 3000
     private static let pendingEventLimit = 100
 }

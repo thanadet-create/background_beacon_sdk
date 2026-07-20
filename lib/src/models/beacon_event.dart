@@ -4,6 +4,17 @@ enum BeaconEventType {
   enterRegion,
   exitRegion,
   ranged,
+
+  /// User paused scanning from the foreground service notification
+  /// (Android FGS mode only). `region` is empty and `beacons` is empty —
+  /// the event is about the whole session, not one region. Scanning stays
+  /// off until [monitoringResumed]; no enter/exit/ranged events in between.
+  monitoringPaused,
+
+  /// User resumed scanning from the notification (Android FGS mode only).
+  /// Region state restarts fresh: beacons still in range re-fire
+  /// `enterRegion` once (same semantics as a headless restart).
+  monitoringResumed,
 }
 
 class BeaconEvent {

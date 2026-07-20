@@ -42,11 +42,6 @@ struct BeaconRegionData {
         return CLBeaconIdentityConstraint(uuid: uuid)
     }
 
-    func matches(_ beacon: CLBeacon) -> Bool {
-        beacon.uuid == uuid &&
-            (major == nil || beacon.major.uint16Value == major) &&
-            (minor == nil || beacon.minor.uint16Value == minor)
-    }
 }
 
 struct ScanSettingsData {
@@ -91,6 +86,8 @@ func beaconMap(_ beacon: CLBeacon) -> [String: Any] {
 
 /// Map per the Dart `BeaconEvent` wire contract.
 /// type must match the enum names exactly: "enterRegion" | "exitRegion" | "ranged"
+/// ("monitoringPaused" | "monitoringResumed" exist in the contract but are
+/// Android-only — iOS never emits them)
 func eventMap(type: String, region: String, beacons: [[String: Any]]) -> [String: Any] {
     [
         "type": type,

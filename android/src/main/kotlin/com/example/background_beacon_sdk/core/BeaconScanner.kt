@@ -9,9 +9,6 @@ interface BeaconScanner {
 
     fun stopMonitoring()
 
-    /** One-shot: scan until a beacon in the region is found or [timeoutMs] elapses — callback on main */
-    fun detectBeacon(region: BeaconRegionData, timeoutMs: Long, callback: (Boolean) -> Unit)
-
     /** The listener is invoked from a binder thread — receivers must post to main themselves */
     fun setListener(listener: (BeaconEventData) -> Unit)
 }

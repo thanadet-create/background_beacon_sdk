@@ -6,14 +6,15 @@ import PackageDescription
 let package = Package(
     name: "background_beacon_sdk",
     platforms: [
-        // iOS 13 ขั้นต่ำ — ต้องตรงกับ s.platform ใน podspec (สอง manifest คู่กัน
-        // จนกว่า CocoaPods จะถูกถอด)
+        // iOS 13 minimum — must match s.platform in the podspec (the two
+        // manifests live side by side until CocoaPods is dropped)
         .iOS("13.0")
     ],
     products: [
-        // ชื่อ product ต้องเป็น dash: tool ฝั่ง app generate dependency เป็น
-        // ชื่อ plugin ที่แทน _ ด้วย - (library name ห้ามมี underscore
-        // เพราะถูกใช้เป็น CFBundleIdentifier ตอน link แบบ dynamic)
+        // Product name must use dashes: the app-side tool generates the
+        // dependency as the plugin name with _ replaced by - (library names
+        // can't contain underscores — they become the CFBundleIdentifier
+        // when linked dynamically)
         .library(name: "background-beacon-sdk", targets: ["background_beacon_sdk"])
     ],
     dependencies: [
@@ -26,9 +27,10 @@ let package = Package(
                 .product(name: "FlutterFramework", package: "FlutterFramework")
             ],
             resources: [
-                // Privacy manifest ยังว่าง — SDK ไม่ใช้ required-reason APIs
-                // (CoreLocation ไม่อยู่ในลิสต์) การเก็บ location data เป็น
-                // ความรับผิดชอบฝั่ง app ที่ integrate ต้องประกาศเอง
+                // Privacy manifest still empty — the SDK uses no
+                // required-reason APIs (CoreLocation isn't on the list);
+                // declaring location data collection is the integrating
+                // app's responsibility
                 // .process("PrivacyInfo.xcprivacy"),
             ]
         )

@@ -29,8 +29,6 @@ void main() {
           return 'hms';
         case 'requestPermissions':
           return true;
-        case 'detectBeacon':
-          return true;
         default:
           return null;
       }
@@ -75,16 +73,6 @@ void main() {
       final args = log.first.arguments as Map;
       expect(args['regions'], [regions.first.toMap()]);
       expect(args['settings'], settings.toMap());
-    });
-
-    test('detectBeacon sends region map and returns result', () async {
-      final region = BeaconRegion(identifier: 'x', uuid: 'abc');
-
-      final detected = await platform.detectBeacon(region);
-
-      expect(detected, true);
-      expect(log.first.method, 'detectBeacon');
-      expect(log.first.arguments, region.toMap());
     });
 
     test('beaconEvents decodes event map from native into BeaconEvent',

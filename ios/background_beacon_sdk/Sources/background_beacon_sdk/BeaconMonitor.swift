@@ -18,15 +18,6 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
     private var cycleSightings: [String: (region: String, beacon: [String: Any])] = [:]
     private var flushTimer: Timer?
 
-    private struct PendingDetect {
-        let region: BeaconRegionData
-        let constraint: CLBeaconIdentityConstraint
-        let callback: (Bool) -> Void
-        let timeout: DispatchWorkItem
-    }
-
-    private var pendingDetects: [PendingDetect] = []
-
     override init() {
         super.init()
         manager.delegate = self
@@ -132,26 +123,6 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
         keepAliveActive = false
     }
 
-    func detectBeacon(
-        region: BeaconRegionData,
-        timeoutMs: Int,
-        callback: @escaping (Bool) -> Void
-    ) {
-        let constraint = region.constraint
-        let timeout = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingDetects.removeAll { $0.region.identifier == region.identifier }
-            self.stopRangingIfUnused(constraint)
-            callback(false)
-        }
-        pendingDetects.append(PendingDetect(
-            region: region, constraint: constraint, callback: callback, timeout: timeout))
-
-        manager.startRangingBeacons(satisfying: constraint)
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + .milliseconds(timeoutMs), execute: timeout)
-    }
-
     // MARK: - CLLocationManagerDelegate
     func locationManager(
         _ manager: CLLocationManager,
@@ -178,8 +149,6 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
         didRange beacons: [CLBeacon],
         satisfying constraint: CLBeaconIdentityConstraint
     ) {
-        resolveDetects(with: beacons)
-
         guard rangingEnabled, !beacons.isEmpty else { return }
         guard let identifier = identifier(for: constraint) else { return }
         for beacon in beacons {
@@ -234,29 +203,12 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
         regionConstraints.first { sameConstraint($0.value, constraint) }?.key
     }
 
-    private func resolveDetects(with beacons: [CLBeacon]) {
-        guard !pendingDetects.isEmpty, !beacons.isEmpty else { return }
-        let resolved = pendingDetects.filter { pending in
-            beacons.contains { pending.region.matches($0) }
-        }
-        guard !resolved.isEmpty else { return }
-        pendingDetects.removeAll { pending in
-            resolved.contains { $0.region.identifier == pending.region.identifier }
-        }
-        for pending in resolved {
-            pending.timeout.cancel()
-            stopRangingIfUnused(pending.constraint)
-            pending.callback(true)
-        }
-    }
-
     private func stopRangingIfUnused(_ constraint: CLBeaconIdentityConstraint) {
         let usedByMonitoring = rangingEnabled && insideRegions.contains { identifier in
             guard let active = regionConstraints[identifier] else { return false }
             return sameConstraint(active, constraint)
         }
-        let usedByDetect = pendingDetects.contains { sameConstraint($0.constraint, constraint) }
-        if !usedByMonitoring && !usedByDetect {
+        if !usedByMonitoring {
             manager.stopRangingBeacons(satisfying: constraint)
         }
     }

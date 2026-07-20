@@ -49,7 +49,8 @@ class BeaconAds {
   /// `GET /api/v1/ads/resolve`. Returns null when the point has no ad (404)
   /// or the request fails — ads are best-effort and must never throw into
   /// the caller's event loop.
-  Future<Ad?> resolveAd({
+  Future<Ad?> 
+  resolveAd({
     required String uuid,
     required int major,
     required int minor,

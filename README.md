@@ -127,6 +127,17 @@ await manager.registerBackgroundCallback(onBgEvent); // ก่อน startMonito
 - งานใน callback ที่ยิง HTTP ต้องตั้ง timeout สั้นกว่า ~10 วิ
   (เพดาน goAsync ของ Android) — แนะนำ 5 วิ
 
+## Android: ปุ่มหยุด/เริ่มสแกนบน notification (โหมด foreground service)
+
+notification ของโหมด foreground service มีปุ่ม toggle ให้ user หยุด/เริ่ม
+scan ได้เอง — app ควร handle event ที่เกี่ยวข้อง:
+
+- กดหยุด → SDK ยิง `monitoringPaused` / กดเริ่ม → `monitoringResumed`
+  (สอง event นี้ `region` เป็น string ว่าง, `beacons` ว่าง — Android เท่านั้น)
+- ระหว่าง pause ไม่มี enter/exit/ranged ใด ๆ / resume แล้ว beacon ที่ยังอยู่
+  ในเขตจะ `enterRegion` ซ้ำหนึ่งครั้ง
+- pause อยู่แล้ว app โดน kill → scan ปิดค้างจนเปิด app ใหม่
+
 ## พฤติกรรม event ที่ต่างกันต่อ platform
 
 - **Android**: `enterRegion` ยิงทันทีที่เห็น beacon แรก / `exitRegion`

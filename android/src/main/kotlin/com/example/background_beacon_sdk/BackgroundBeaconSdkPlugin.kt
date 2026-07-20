@@ -108,19 +108,6 @@ class BackgroundBeaconSdkPlugin :
                 result.success(null)
             }
 
-            "detectBeacon" -> {
-                try {
-                    @Suppress("UNCHECKED_CAST")
-                    val region = BeaconRegionData.fromMap(call.arguments as Map<String, Any?>)
-                    // Callback already arrives on main (BeaconScanner.detectBeacon's contract)
-                    ensureScanner().detectBeacon(region, DETECT_TIMEOUT_MS) { found ->
-                        result.success(found)
-                    }
-                } catch (e: Exception) {
-                    result.error("DETECT_FAILED", e.message, null)
-                }
-            }
-
             "registerBackgroundCallback" -> {
                 // The channel delivers small ints as Int, large as Long — accept via Number
                 val dispatcherHandle =
@@ -170,9 +157,5 @@ class BackgroundBeaconSdkPlugin :
         scanner?.stopMonitoring() // engine gone — the scan must not leak and keep draining battery
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
-    }
-
-    private companion object {
-        const val DETECT_TIMEOUT_MS = 3000L
     }
 }

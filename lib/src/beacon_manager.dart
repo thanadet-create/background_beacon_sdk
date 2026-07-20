@@ -63,12 +63,6 @@ class BeaconManager {
     return _native.stopMonitoring();
   }
 
-  // detect beacon once
-  Future<bool> detectBeacon(BeaconRegion region) {
-    _ensureInitialized();
-    return _native.detectBeacon(region);
-  }
-
   // register function for background process
   Future<void> registerBackgroundCallback(
       BackgroundBeaconCallback callback) async {

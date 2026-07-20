@@ -21,7 +21,7 @@ allprojects {
 }
 
 plugins {
-    // AGP 9 มี built-in Kotlin — ไม่ต้อง apply kotlin-android แยก
+    // AGP 9 ships built-in Kotlin — no separate kotlin-android apply needed
     id("com.android.library")
 }
 
@@ -42,7 +42,7 @@ android {
     }
 
     defaultConfig {
-        // BLE callback scan ใช้ได้ตั้งแต่ 21 — PendingIntent scan (step 5) ต้อง 26+
+        // BLE callback scan works from 21 — PendingIntent scan needs 26+
         minSdk = 21
     }
 }
@@ -54,7 +54,7 @@ kotlin {
 }
 
 dependencies {
-    // GoogleApiAvailability สำหรับเช็ค GMS — ฝั่ง HMS เช็คผ่าน PackageManager
-    // จึงไม่ต้องพึ่ง Huawei SDK/maven repo เลย
+    // GoogleApiAvailability for the GMS check — the HMS side checks via
+    // PackageManager, so no Huawei SDK/maven repo dependency at all
     implementation("com.google.android.gms:play-services-base:18.5.0")
 }

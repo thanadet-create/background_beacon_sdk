@@ -6,16 +6,25 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 /// Live Activity (iOS 16.2+) — talks to LiveActivityManager in Runner.
-/// Methods: start / update, args: {text, count} — no end; the card stays up.
+/// Methods: start / update, args: {text, count, scanning} — no end; the card
+/// stays up. `scanning` drives the toggle button label (iOS 17+).
+/// The native side calls back with method "toggle" when the user taps the
+/// button on the card — handled in _BeaconTestPageState.
 const _liveActivityChannel = MethodChannel(
   'background_beacon_sdk_example/live_activity',
 );
 
-Future<void> _liveActivity(String method, String text, int count) async {
+Future<void> _liveActivity(
+  String method,
+  String text,
+  int count, {
+  bool scanning = true,
+}) async {
   try {
     await _liveActivityChannel.invokeMethod(method, {
       'text': text,
       'count': count,
+      'scanning': scanning,
     });
   } catch (_) {
     // Android / older iOS / extension not created yet — stay silent,
@@ -98,8 +107,7 @@ Future<void> onBackgroundBeaconEvent(BeaconEvent event) async {
     'BG-BEACON: ${event.type.name} ${event.region} '
     '(${event.beacons.length} beacons)',
   );
-  // Ads still pop while the app is killed — the heart of the system.
-  // enter/ranged share one path: the prefs cooldown dedupes repeats.
+  // Ads still pop while the app is killed
   // (exit carries an empty beacons list per spec — this loop no-ops.)
   // The await matters: the dispatcher waits for us before letting the
   // process be reclaimed.
@@ -130,7 +138,29 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
   @override
   void initState() {
     super.initState();
+    // Live Activity button (iOS 17+) — the intent runs native-side and pings
+    // us here; Dart owns the actual stop/start decision.
+    _liveActivityChannel.setMethodCallHandler((call) async {
+      if (call.method == 'toggle') await _toggleFromLiveActivity();
+    });
     _autoStart();
+  }
+
+  /// iOS has no pause mode — toggling really stops/starts monitoring.
+  /// The card itself stays up either way (the app never calls end).
+  Future<void> _toggleFromLiveActivity() async {
+    if (_monitoring) {
+      await _manager.stopMonitoring();
+      setState(() => _monitoring = false);
+      _addLog('หยุดสแกนจาก Live Activity');
+      await _liveActivity('update', 'หยุดสแกนแล้ว', 0, scanning: false);
+    } else {
+      _addLog('เริ่มสแกนจาก Live Activity');
+      await _startMonitoring();
+      if (_monitoring) {
+        await _liveActivity('update', 'กำลังหา beacon…', 0);
+      }
+    }
   }
 
   /// Scan immediately on launch, no button: init → permission → start.
@@ -268,17 +298,6 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
     }
   }
 
-  Future<void> _detectOnce() async {
-    final region = _regions().first;
-    _addLog('detecting ${region.uuid ?? '(all beacons)'} (3s timeout)...');
-    try {
-      final found = await _manager.detectBeacon(region);
-      _addLog('detectBeacon: ${found ? 'FOUND' : 'not found'}');
-    } catch (e) {
-      _addLog('detectBeacon failed: $e');
-    }
-  }
-
   void _onEvent(BeaconEvent event) {
     switch (event.type) {
       case BeaconEventType.enterRegion:
@@ -343,12 +362,19 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
             event.beacons.length,
           );
         }
+      // Android only — user tapped the button on the FGS notification.
+      // Scanning state changed native-side; just mirror it in the UI.
+      case BeaconEventType.monitoringPaused:
+        _addLog('หยุดสแกนจากปุ่มบน notification');
+        setState(() => _monitoring = false);
+      case BeaconEventType.monitoringResumed:
+        _addLog('เริ่มสแกนต่อจากปุ่มบน notification');
+        setState(() => _monitoring = true);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final initialized = _platform != null;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Beacon SDK Example'),
@@ -361,28 +387,14 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
             child: Column(
               crossAxisAlignment: .stretch,
               children: [
+                // Every step (init/permission/start) runs itself at
+                // launch — no buttons; pause/resume lives on the
+                // notification (Android) / Live Activity (iOS).
                 Text(
                   'platform: ${_platform?.name ?? '-'}   '
                   'permission: ${_permissionGranted ? 'yes' : 'no'}   '
                   'monitoring: ${_monitoring ? 'on' : 'off'}',
                   style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    // Every step (init/permission/start) runs itself at
-                    // launch. No stop/start buttons — scanning and the
-                    // Live Activity are always on.
-                    OutlinedButton(
-                      onPressed:
-                          initialized && _permissionGranted && !_monitoring
-                          ? _detectOnce
-                          : null,
-                      child: const Text('Detect once'),
-                    ),
-                  ],
                 ),
               ],
             ),

@@ -38,11 +38,6 @@ abstract class BackgroundBeaconPlatform extends PlatformInterface {
     throw UnimplementedError('stopMonitoring() has not been implemented.');
   }
 
-  // detect
-  Future<bool> detectBeacon(BeaconRegion region) {
-    throw UnimplementedError('detectBeacon() has not been implemented.');
-  }
-
   // for background process
   Future<void> registerBackgroundCallback(
       int dispatcherHandle, int callbackHandle) {
