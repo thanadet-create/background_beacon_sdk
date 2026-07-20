@@ -9,6 +9,9 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class BeaconAds {
+  static const _deviceIdKey = 'background_beacon_sdk.device_id';
+  static const _attemptKeyPrefix = 'background_beacon_sdk.ad_resolved_at/';
+
   /// Root URL of the ads backend
   final String baseUrl;
   final Duration cooldown;
@@ -29,9 +32,6 @@ class BeaconAds {
     http.Client? client,
   }) : _client = client ?? http.Client();
 
-  static const _deviceIdKey = 'background_beacon_sdk.device_id';
-  static const _attemptKeyPrefix = 'background_beacon_sdk.ad_resolved_at/';
-
   /// Per-install device ID sent as `X-Device-ID` on every resolve request.
   /// Generated on first call and persisted; survives until the app's data
   /// is cleared or the app is uninstalled.
@@ -49,8 +49,7 @@ class BeaconAds {
   /// `GET /api/v1/ads/resolve`. Returns null when the point has no ad (404)
   /// or the request fails — ads are best-effort and must never throw into
   /// the caller's event loop.
-  Future<Ad?> 
-  resolveAd({
+  Future<Ad?> resolveAd({
     required String uuid,
     required int major,
     required int minor,
@@ -72,7 +71,8 @@ class BeaconAds {
     }
   }
 
-  // app notification
+  /// Main entry: throttle per install point, resolve the ad, then show a
+  /// local notification. Silent when there's no ad or the network is down.
   Future<void> showAdNotification(
     Beacon beacon, {
     void Function(String)? log,

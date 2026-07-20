@@ -9,7 +9,7 @@ enum MobilePlatform {
 }
 
 class PlatformDetector {
-  //constuctor (use const for create obejct once and use it many times)
+  // const so the default instance can be shared everywhere
   const PlatformDetector();
 
   Future<MobilePlatform> detectPlatform() async {

@@ -5,6 +5,59 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+void main() {
+  runApp(const ExampleApp());
+}
+
+// ---------------------------------------------------------------------------
+// Config — all values come from config/dev.json via --dart-define-from-file
+// ---------------------------------------------------------------------------
+
+/// Single UUID for the whole fleet — scheme: UUID = our system,
+/// major = branch, minor = install point (details mapped in the database).
+///
+/// Lives in config/dev.json only — no fallback in code: running without
+/// `--dart-define-from-file=config/dev.json` yields an empty string and
+/// _startMonitoring stops with a message (better than silently scanning
+/// for the wrong UUID).
+const _fleetUuid = String.fromEnvironment('BEACON_UUID');
+
+/// Ads backend — lives in config/dev.json only (same as BEACON_UUID).
+/// No flag = empty string → every resolve fails silently (ads are
+/// best-effort, scanning is unaffected) — _startMonitoring logs it once.
+const _adsBaseUrl = String.fromEnvironment('ADS_BASE_URL');
+
+/// All timing values come from config/dev.json — tune them during field
+/// tests without touching code. (Must be read via `const` only — non-const
+/// reads always get the default.) Defaults are kept for the numbers:
+/// a missing flag would silently yield 0 (int.fromEnvironment), and
+/// scanIntervalMs = 0 means non-stop scanning.
+const _scanIntervalMs = int.fromEnvironment(
+  'SCAN_INTERVAL_MS',
+  defaultValue: 5000,
+);
+const _scanDurationMs = int.fromEnvironment(
+  'SCAN_DURATION_MS',
+  defaultValue: 2000,
+);
+const _adCooldownMinutes = int.fromEnvironment(
+  'AD_COOLDOWN_MINUTES',
+  defaultValue: 3,
+);
+
+// ---------------------------------------------------------------------------
+// Shared services — top-level so the background isolate can reach them too
+// ---------------------------------------------------------------------------
+
+/// One instance shared by the UI isolate and the background isolate —
+/// top-level because the background isolate has no State; cooldown state
+/// already lives in prefs. Cooldown is shorter than the SDK default so
+/// repeated testing is quick.
+final _ads = BeaconAds(
+  baseUrl: _adsBaseUrl,
+  cooldown: const Duration(minutes: _adCooldownMinutes),
+);
+
 /// Live Activity (iOS 16.2+) — talks to LiveActivityManager in Runner.
 /// Methods: start / update, args: {text, count, scanning} — no end; the card
 /// stays up. `scanning` drives the toggle button label (iOS 17+).
@@ -32,41 +85,28 @@ Future<void> _liveActivity(
   }
 }
 
-/// Ads backend — lives in config/dev.json only (same as BEACON_UUID).
-/// No flag = empty string → every resolve fails silently (ads are
-/// best-effort, scanning is unaffected) — _startMonitoring logs it once.
-const _adsBaseUrl = String.fromEnvironment('ADS_BASE_URL');
-
-/// All timing values come from config/dev.json — tune them during field
-/// tests without touching code. (Must be read via `const` only — non-const
-/// reads always get the default.) Defaults are kept for the numbers:
-/// a missing flag would silently yield 0 (int.fromEnvironment), and
-/// scanIntervalMs = 0 means non-stop scanning.
-const _scanIntervalMs = int.fromEnvironment(
-  'SCAN_INTERVAL_MS',
-  defaultValue: 5000,
-);
-const _scanDurationMs = int.fromEnvironment(
-  'SCAN_DURATION_MS',
-  defaultValue: 2000,
-);
-const _adCooldownMinutes = int.fromEnvironment(
-  'AD_COOLDOWN_MINUTES',
-  defaultValue: 3,
-);
-
-/// One instance shared by the UI isolate and the background isolate —
-/// top-level because the background isolate has no State; cooldown state
-/// already lives in prefs. Cooldown is shorter than the SDK default so
-/// repeated testing is quick.
-final _ads = BeaconAds(
-  baseUrl: _adsBaseUrl,
-  cooldown: const Duration(minutes: _adCooldownMinutes),
-);
-
-void main() {
-  runApp(const ExampleApp());
+/// Receives events after the app is killed (Android) — runs in a background
+/// isolate with no UI. Must be top-level + `vm:entry-point` so AOT doesn't
+/// tree-shake it. Watch via `adb logcat | grep BG-BEACON`
+/// (setState/context are unusable here).
+@pragma('vm:entry-point')
+Future<void> onBackgroundBeaconEvent(BeaconEvent event) async {
+  debugPrint(
+    'BG-BEACON: ${event.type.name} ${event.region} '
+    '(${event.beacons.length} beacons)',
+  );
+  // Ads still pop while the app is killed
+  // (exit carries an empty beacons list per spec — this loop no-ops.)
+  // The await matters: the dispatcher waits for us before letting the
+  // process be reclaimed.
+  for (final beacon in event.beacons) {
+    await _ads.showAdNotification(beacon);
+  }
 }
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
 
 class ExampleApp extends StatelessWidget {
   const ExampleApp({super.key});
@@ -88,35 +128,9 @@ class BeaconTestPage extends StatefulWidget {
   State<BeaconTestPage> createState() => _BeaconTestPageState();
 }
 
-/// Single UUID for the whole fleet — scheme: UUID = our system,
-/// major = branch, minor = install point (details mapped in the database).
-///
-/// Lives in config/dev.json only — no fallback in code: running without
-/// `--dart-define-from-file=config/dev.json` yields an empty string and
-/// _startMonitoring stops with a message (better than silently scanning
-/// for the wrong UUID).
-const _fleetUuid = String.fromEnvironment('BEACON_UUID');
-
-/// Receives events after the app is killed (Android) — runs in a background
-/// isolate with no UI. Must be top-level + `vm:entry-point` so AOT doesn't
-/// tree-shake it. Watch via `adb logcat | grep BG-BEACON`
-/// (setState/context are unusable here).
-@pragma('vm:entry-point')
-Future<void> onBackgroundBeaconEvent(BeaconEvent event) async {
-  debugPrint(
-    'BG-BEACON: ${event.type.name} ${event.region} '
-    '(${event.beacons.length} beacons)',
-  );
-  // Ads still pop while the app is killed
-  // (exit carries an empty beacons list per spec — this loop no-ops.)
-  // The await matters: the dispatcher waits for us before letting the
-  // process be reclaimed.
-  for (final beacon in event.beacons) {
-    await _ads.showAdNotification(beacon);
-  }
-}
-
 class _BeaconTestPageState extends State<BeaconTestPage> {
+  // ---- state ----
+
   final _manager = BeaconManager();
 
   MobilePlatform? _platform;
@@ -135,6 +149,8 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
   /// of silence.
   final Map<String, _SeenBeacon> _seenBeacons = {};
 
+  // ---- lifecycle ----
+
   @override
   void initState() {
     super.initState();
@@ -146,22 +162,13 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
     _autoStart();
   }
 
-  /// iOS has no pause mode — toggling really stops/starts monitoring.
-  /// The card itself stays up either way (the app never calls end).
-  Future<void> _toggleFromLiveActivity() async {
-    if (_monitoring) {
-      await _manager.stopMonitoring();
-      setState(() => _monitoring = false);
-      _addLog('หยุดสแกนจาก Live Activity');
-      await _liveActivity('update', 'หยุดสแกนแล้ว', 0, scanning: false);
-    } else {
-      _addLog('เริ่มสแกนจาก Live Activity');
-      await _startMonitoring();
-      if (_monitoring) {
-        await _liveActivity('update', 'กำลังหา beacon…', 0);
-      }
-    }
+  @override
+  void dispose() {
+    _subscription?.cancel();
+    super.dispose();
   }
+
+  // ---- startup flow ----
 
   /// Scan immediately on launch, no button: init → permission → start.
   /// The permission dialog appears only on first run (the OS requires the
@@ -186,6 +193,26 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
     await _startMonitoring();
   }
 
+  Future<void> _initialize() async {
+    try {
+      final platform = await _manager.initialize();
+      setState(() => _platform = platform);
+      _addLog('initialized: ${platform.name}');
+    } catch (e) {
+      _addLog('initialize failed: $e');
+    }
+  }
+
+  Future<void> _requestPermissions() async {
+    try {
+      final granted = await _manager.requestPermissions();
+      setState(() => _permissionGranted = granted);
+      _addLog('permissions: ${granted ? 'granted' : 'denied'}');
+    } catch (e) {
+      _addLog('requestPermissions failed: $e');
+    }
+  }
+
   /// Notification permission — Android 13+ / iOS require a runtime request.
   /// Denial doesn't block scanning — ad notifications just won't show.
   Future<void> _requestNotificationPermission() async {
@@ -206,45 +233,7 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
     }
   }
 
-  @override
-  void dispose() {
-    _subscription?.cancel();
-    super.dispose();
-  }
-
-  void _addLog(String line) {
-    // Mirror to console — visible from the dev machine (adb logcat /
-    // idevicesyslog) without a flutter run session attached.
-    debugPrint('BEACON-LOG: $line');
-    setState(() {
-      final time = TimeOfDay.now();
-      _log.insert(
-        0,
-        '[${time.hour}:${time.minute.toString().padLeft(2, '0')}] $line',
-      );
-      if (_log.length > 100) _log.removeLast();
-    });
-  }
-
-  Future<void> _initialize() async {
-    try {
-      final platform = await _manager.initialize();
-      setState(() => _platform = platform);
-      _addLog('initialized: ${platform.name}');
-    } catch (e) {
-      _addLog('initialize failed: $e');
-    }
-  }
-
-  Future<void> _requestPermissions() async {
-    try {
-      final granted = await _manager.requestPermissions();
-      setState(() => _permissionGranted = granted);
-      _addLog('permissions: ${granted ? 'granted' : 'denied'}');
-    } catch (e) {
-      _addLog('requestPermissions failed: $e');
-    }
-  }
+  // ---- monitoring ----
 
   /// One region covers every beacon in the fleet (they share one UUID) —
   /// works identically on iOS/Android; branch/point come from each
@@ -297,6 +286,8 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
       _addLog('startMonitoring failed: $e');
     }
   }
+
+  // ---- event handling ----
 
   void _onEvent(BeaconEvent event) {
     switch (event.type) {
@@ -372,6 +363,39 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
         setState(() => _monitoring = true);
     }
   }
+
+  /// iOS has no pause mode — toggling really stops/starts monitoring.
+  /// The card itself stays up either way (the app never calls end).
+  Future<void> _toggleFromLiveActivity() async {
+    if (_monitoring) {
+      await _manager.stopMonitoring();
+      setState(() => _monitoring = false);
+      _addLog('หยุดสแกนจาก Live Activity');
+      await _liveActivity('update', 'หยุดสแกนแล้ว', 0, scanning: false);
+    } else {
+      _addLog('เริ่มสแกนจาก Live Activity');
+      await _startMonitoring();
+      if (_monitoring) {
+        await _liveActivity('update', 'กำลังหา beacon…', 0);
+      }
+    }
+  }
+
+  void _addLog(String line) {
+    // Mirror to console — visible from the dev machine (adb logcat /
+    // idevicesyslog) without a flutter run session attached.
+    debugPrint('BEACON-LOG: $line');
+    setState(() {
+      final time = TimeOfDay.now();
+      _log.insert(
+        0,
+        '[${time.hour}:${time.minute.toString().padLeft(2, '0')}] $line',
+      );
+      if (_log.length > 100) _log.removeLast();
+    });
+  }
+
+  // ---- UI ----
 
   @override
   Widget build(BuildContext context) {

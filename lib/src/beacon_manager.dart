@@ -7,28 +7,25 @@ import 'package:background_beacon_sdk/src/models/beacon_region.dart';
 import 'package:background_beacon_sdk/src/models/scan_settings.dart';
 import 'package:background_beacon_sdk/src/platform_detector.dart';
 
+/// Facade the app talks to — methods below appear in the order an app
+/// should call them: initialize → requestPermissions → onBeaconEvent →
+/// registerBackgroundCallback → startMonitoring → stopMonitoring.
 class BeaconManager {
   // detector to detect platform (ios, androidGms, androidHms, unsupported)
   final PlatformDetector _detector;
 
-  // use ? for nullable type because it will be initialized later in initialize() method
+  // nullable: set once by initialize(), guards every other method
   MobilePlatform? _platform;
 
-  // create getter for native return instance of BackgroundBeaconPlatform
-  BackgroundBeaconPlatform get _native => BackgroundBeaconPlatform.instance;
-
-  Stream<BeaconEvent> get onBeaconEvent {
-    _ensureInitialized();
-    return _native.beaconEvents;
-  }
-
-  // constructure create object with default detector
   BeaconManager({PlatformDetector detector = const PlatformDetector()})
       : _detector = detector;
 
-  //initialize method to detect platform and set _platform variable
+  // getter so tests can swap BackgroundBeaconPlatform.instance underneath
+  BackgroundBeaconPlatform get _native => BackgroundBeaconPlatform.instance;
+
+  /// Detect the platform once and cache it — every other method throws
+  /// [StateError] until this has completed.
   Future<MobilePlatform> initialize() async {
-    // check if _platform is already initialized, if yes return cached value
     final cached = _platform;
     if (cached != null) return cached;
 
@@ -41,38 +38,30 @@ class BeaconManager {
     return detected;
   }
 
-  // requestPermissions method to request permission from native
+  /// Request every permission scanning needs (Android asks in two steps:
+  /// foreground first, then background location).
   Future<bool> requestPermissions() {
     _ensureInitialized();
     return _native.requestPermissions();
   }
 
-  //start monitoring beacons with given regions and settings
-  Future<void> startMonitoring(
-      List<BeaconRegion> regions, ScanSettings settings) {
+  /// Listen before [startMonitoring] so no early event is lost.
+  Stream<BeaconEvent> get onBeaconEvent {
     _ensureInitialized();
-    if (regions.isEmpty) {
-      throw ArgumentError.value(regions, 'regions', 'must not be empty');
-    }
-    return _native.startMonitoring(regions, settings);
+    return _native.beaconEvents;
   }
 
-  // stop monitoring beacons
-  Future<void> stopMonitoring() {
-    _ensureInitialized();
-    return _native.stopMonitoring();
-  }
-
-  // register function for background process
+  /// Register the callback that receives events after the app is killed
+  /// (Android only — no-op on iOS). Call before [startMonitoring].
   Future<void> registerBackgroundCallback(
       BackgroundBeaconCallback callback) async {
     _ensureInitialized();
-    // this work only android os
     if (_platform != MobilePlatform.androidGms &&
         _platform != MobilePlatform.androidHms) {
       return;
     }
-    // use pluginUtilities for background process
+    // PluginUtilities gives a stable handle only for top-level/static
+    // functions — anything else can't be called back from native
     final callbackHandle = PluginUtilities.getCallbackHandle(callback);
     if (callbackHandle == null) {
       throw ArgumentError.value(callback, 'callback',
@@ -84,6 +73,21 @@ class BeaconManager {
 
     await _native.registerBackgroundCallback(
         dispatcherHandle.toRawHandle(), callbackHandle.toRawHandle());
+  }
+
+  /// Start scanning — calling again replaces the previous region set.
+  Future<void> startMonitoring(
+      List<BeaconRegion> regions, ScanSettings settings) {
+    _ensureInitialized();
+    if (regions.isEmpty) {
+      throw ArgumentError.value(regions, 'regions', 'must not be empty');
+    }
+    return _native.startMonitoring(regions, settings);
+  }
+
+  Future<void> stopMonitoring() {
+    _ensureInitialized();
+    return _native.stopMonitoring();
   }
 
   void _ensureInitialized() {
