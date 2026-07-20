@@ -13,14 +13,23 @@ void main() {
 // Config — all values come from config/dev.json via --dart-define-from-file
 // ---------------------------------------------------------------------------
 
-/// Single UUID for the whole fleet — scheme: UUID = our system,
-/// major = branch, minor = install point (details mapped in the database).
+/// UUID(s) for the fleet — scheme: UUID = our system, major = branch,
+/// minor = install point (details mapped in the database). Comma-separated
+/// because `--dart-define-from-file` has no array support (a JSON array
+/// value gets stringified via `List.toString()` into `[a, b]`, which isn't
+/// a valid UUID) — one string is the only flat value the tool passes through.
 ///
 /// Lives in config/dev.json only — no fallback in code: running without
 /// `--dart-define-from-file=config/dev.json` yields an empty string and
 /// _startMonitoring stops with a message (better than silently scanning
 /// for the wrong UUID).
-const _fleetUuid = String.fromEnvironment('BEACON_UUID');
+const _fleetUuidRaw = String.fromEnvironment('BEACON_UUID');
+
+List<String> get _fleetUuids => _fleetUuidRaw
+    .split(',')
+    .map((s) => s.trim())
+    .where((s) => s.isNotEmpty)
+    .toList();
 
 /// Ads backend — lives in config/dev.json only (same as BEACON_UUID).
 /// No flag = empty string → every resolve fails silently (ads are
@@ -235,15 +244,16 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
 
   // ---- monitoring ----
 
-  /// One region covers every beacon in the fleet (they share one UUID) —
-  /// works identically on iOS/Android; branch/point come from each
-  /// beacon's major/minor.
+  /// One region per fleet UUID — branch/point still come from each
+  /// beacon's major/minor, not from which region matched.
+  /// iOS caps simultaneous region monitoring at 20 (see CLAUDE.md).
   List<BeaconRegion> _regions() => [
-    BeaconRegion(identifier: 'fleet', uuid: _fleetUuid),
+    for (final (i, uuid) in _fleetUuids.indexed)
+      BeaconRegion(identifier: 'fleet-$i', uuid: uuid),
   ];
 
   Future<void> _startMonitoring() async {
-    if (_fleetUuid.isEmpty) {
+    if (_fleetUuids.isEmpty) {
       _addLog('empty BEACON_UUID value');
       return;
     }
@@ -315,7 +325,6 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
       case BeaconEventType.ranged:
         // enter may carry only the first beacon — other points on the same
         // site surface via ranged; the cooldown inside showAdNotification
-        // stops re-fires every ~5 s.
         for (final beacon in event.beacons) {
           unawaited(_ads.showAdNotification(beacon, log: _addLog));
         }
