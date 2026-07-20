@@ -1,8 +1,6 @@
 import CoreLocation
 
-// Models ฝั่ง Swift ที่ mirror ฝั่ง Dart
-// wire contract (ชื่อ key / format) ดู dartdoc ใน lib/src/models/ เป็น spec
-
+// Models
 struct BeaconRegionData {
     let identifier: String
     let uuid: UUID
@@ -12,7 +10,7 @@ struct BeaconRegionData {
     init?(map: [String: Any?]) {
         guard let identifier = map["identifier"] as? String,
               let uuidString = map["uuid"] as? String,
-              let uuid = UUID(uuidString: uuidString) // case-insensitive อยู่แล้ว
+              let uuid = UUID(uuidString: uuidString)
         else { return nil }
         self.identifier = identifier
         self.uuid = uuid
@@ -20,7 +18,7 @@ struct BeaconRegionData {
         self.minor = (map["minor"] as? NSNumber).map { CLBeaconMinorValue(truncating: $0) }
     }
 
-    /// Region สำหรับ monitoring — OS persist ให้ข้าม app launch
+    /// Region for monitoring
     var clRegion: CLBeaconRegion {
         let region: CLBeaconRegion
         if let major, let minor {
@@ -30,12 +28,10 @@ struct BeaconRegionData {
         } else {
             region = CLBeaconRegion(uuid: uuid, identifier: identifier)
         }
-        // จอสว่างให้ระบบเช็ค state ทันที — enter/exit ไวขึ้นโดยไม่ต้อง ranging
         region.notifyEntryStateOnDisplay = true
         return region
     }
 
-    /// Constraint สำหรับ ranging (คนละ object กับ region แต่ field ชุดเดียวกัน)
     var constraint: CLBeaconIdentityConstraint {
         if let major, let minor {
             return CLBeaconIdentityConstraint(uuid: uuid, major: major, minor: minor)
@@ -46,7 +42,6 @@ struct BeaconRegionData {
         return CLBeaconIdentityConstraint(uuid: uuid)
     }
 
-    /// major/minor เป็น nil = wildcard จับทุกค่า (semantics เดียวกับฝั่ง Android)
     func matches(_ beacon: CLBeacon) -> Bool {
         beacon.uuid == uuid &&
             (major == nil || beacon.major.uint16Value == major) &&
@@ -55,24 +50,33 @@ struct BeaconRegionData {
 }
 
 struct ScanSettingsData {
-    /// interval/duration/notification เป็นเรื่องของ Android
-    /// (region monitoring ของ iOS ระบบจัดตารางเอง)
+    /// duration/notification are Android concerns
+    /// (iOS region monitoring is scheduled by the OS itself)
     let rangingEnabled: Bool
 
-    /// เปิด location keep-alive ให้ ranging ไหลต่อตอน background
-    /// (ดูเงื่อนไข/ราคาใน dartdoc ของ ScanSettings)
+    /// Location keep-alive so ranging keeps flowing in the background —
+    /// session-scoped: starts on first region enter, stops after leaving
+    /// all regions (conditions/costs in the ScanSettings dartdoc).
     let continuousRanging: Bool
+
+    /// Ranged-event flush cadence — matches reportDelay on Android
+    /// (CL's didRange fires ~1/s, too often for the "one event per cycle"
+    /// contract).
+    let scanIntervalMs: Int
 
     init?(map: [String: Any?]) {
         guard let rangingEnabled = map["rangingEnabled"] as? Bool else { return nil }
         self.rangingEnabled = rangingEnabled
         self.continuousRanging = (map["continuousRanging"] as? Bool) ?? false
+        // Dart always sends it (required) — fallback just keeps the struct non-nil
+        self.scanIntervalMs = (map["scanIntervalMs"] as? Int) ?? 5000
     }
 }
 
-/// CLBeacon → Map ตาม wire contract ของ `Beacon` ฝั่ง Dart
-/// txPower: CoreLocation ไม่เปิดเผย → -1 / distance: `accuracy` เป็นเมตร (-1 = ไม่รู้)
-/// `mac` จงใจไม่ส่ง (iOS ไม่เปิดเผย MAC) — Dart อ่าน key ที่หายเป็น null เอง
+/// CLBeacon → Map per the Dart `Beacon` wire contract.
+/// txPower: CoreLocation doesn't expose it → -1 / distance: `accuracy`
+/// in meters (-1 = unknown). `mac` is deliberately omitted (iOS never
+/// exposes MAC) — Dart reads the missing key as null.
 func beaconMap(_ beacon: CLBeacon) -> [String: Any] {
     [
         "uuid": beacon.uuid.uuidString.lowercased(),
@@ -85,8 +89,8 @@ func beaconMap(_ beacon: CLBeacon) -> [String: Any] {
     ]
 }
 
-/// Map ตาม wire contract ของ `BeaconEvent` ฝั่ง Dart
-/// type ต้องตรงชื่อ enum เป๊ะ: "enterRegion" | "exitRegion" | "ranged"
+/// Map per the Dart `BeaconEvent` wire contract.
+/// type must match the enum names exactly: "enterRegion" | "exitRegion" | "ranged"
 func eventMap(type: String, region: String, beacons: [[String: Any]]) -> [String: Any] {
     [
         "type": type,
@@ -96,11 +100,11 @@ func eventMap(type: String, region: String, beacons: [[String: Any]]) -> [String
     ]
 }
 
-// local time ไม่มี timezone suffix — ตรงกับ DateTime.parse ฝั่ง Dart และ iso8601 ฝั่ง Kotlin
+// Local time without timezone suffix — matches DateTime.parse on Dart and iso8601 on Kotlin
 private let iso8601Formatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS"
-    // POSIX locale กัน format เพี้ยนตาม locale เครื่อง (ปฏิทินพุทธ/12-hour)
+    // POSIX locale guards against device-locale drift (Buddhist calendar / 12-hour)
     formatter.locale = Locale(identifier: "en_US_POSIX")
     return formatter
 }()

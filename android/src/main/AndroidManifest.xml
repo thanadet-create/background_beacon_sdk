@@ -1,40 +1,26 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- API 31+: scan ต้องมี BLUETOOTH_SCAN (ไม่ใส่ neverForLocation เพราะคำนวณ distance) -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <!-- API ≤ 30: BLE scan ใช้ permission ชุดเก่า + ต้องมี FINE_LOCATION ไม่งั้นผล scan ว่างเงียบ ๆ -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <!-- API 29+: scan ตอน background ต้องมี — เราไม่ใช้ neverForLocation
-         ผล scan จึงโดน gate ด้วย location แม้บน 31+ / app เป็นคนขอ runtime เอง
-         (ระบบบังคับขอแยกหลัง FINE_LOCATION) -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-
-    <!-- โหมด foregroundServiceNotification=true (BeaconForegroundService) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <!-- API 33+: ไม่มีสิทธิ์นี้ service ยังรันได้แต่ notification ไม่โชว์ — app ควรขอ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- restart PendingIntent scan หลัง reboot (BootReceiver) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- required=false: เครื่องไม่มี BLE ให้ติดตั้ง app ได้ SDK จะ fail ตอน start แทน -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application>
-        <!-- type=location: API 34+ บังคับประกาศ — BLE scan เชิงตำแหน่งเข้าข่าย location -->
         <service
             android:name="com.example.background_beacon_sdk.core.BeaconForegroundService"
             android:exported="false"
             android:foregroundServiceType="location" />
 
-        <!-- ปลายทาง PendingIntent scan — ระบบปลุกให้แม้ app โดน kill -->
         <receiver
             android:name="com.example.background_beacon_sdk.core.BeaconScanReceiver"
             android:exported="false" />
 
-        <!-- re-register scan หลัง reboot — exported=false พอ:
-             broadcast จากระบบส่งถึง component ที่ไม่ export ได้ -->
         <receiver
             android:name="com.example.background_beacon_sdk.core.BootReceiver"
             android:exported="false">

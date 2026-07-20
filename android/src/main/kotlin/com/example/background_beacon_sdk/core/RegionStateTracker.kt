@@ -1,23 +1,24 @@
 package com.example.background_beacon_sdk.core
 
 /**
- * State machine เข้า/ออก region — derive จาก sighting ดิบ
+ * Region enter/exit state machine — derived from raw sightings.
  *
- * BLE ไม่มี event "ออกจากเขต" ตรง ๆ มีแต่ "เห็น advertisement" — exit จึงต้อง
- * อนุมานจากความเงียบ: ไม่เห็น beacon ใน region นานเกิน [exitTimeoutMs] ถือว่าออก
- * timeout ต้องยาวกว่ารอบ duty cycle เสมอ ไม่งั้นช่วงพัก scan จะกลายเป็น false exit
- * (ผู้สร้างเป็นคนรับผิดชอบ — ดู BleBeaconScanner.exitTimeoutMs)
+ * BLE has no direct "left the area" event, only "saw an advertisement" —
+ * exit must be inferred from silence: no beacon of the region seen for
+ * longer than [exitTimeoutMs] counts as exited. The timeout must always
+ * exceed the duty cycle, or scan rest periods become false exits
+ * (the creator is responsible — see BleBeaconScanner.exitTimeoutMs).
  *
- * Thread contract: เรียกทุก method จาก main thread เท่านั้น (ไม่มี lock ข้างใน)
+ * Thread contract: call every method from the main thread only (no locks inside).
  */
 class RegionStateTracker(private val exitTimeoutMs: Long) {
 
-    /** identifier ของ region ที่ "อยู่ใน" ตอนนี้ → เวลาเห็นล่าสุด (epoch ms) */
+    /** Identifiers of regions currently "inside" → last seen time (epoch ms) */
     private val lastSeenAt = mutableMapOf<String, Long>()
 
     /**
-     * บันทึกว่าเห็น beacon ใน region นี้ — คืน `true` เมื่อเพิ่งเปลี่ยนสถานะ
-     * นอก→ใน (ผู้เรียกต้องยิง enterRegion event)
+     * Record a beacon sighting for this region — returns `true` when the
+     * state just flipped outside→inside (caller must emit enterRegion).
      */
     fun onSighting(regionIdentifier: String, nowMs: Long): Boolean {
         val wasInside = lastSeenAt.containsKey(regionIdentifier)
@@ -26,8 +27,9 @@ class RegionStateTracker(private val exitTimeoutMs: Long) {
     }
 
     /**
-     * คืน identifier ของ region ที่เงียบเกิน timeout แล้วถอดออกจากสถานะ "ใน"
-     * — ผู้เรียกต้องยิง exitRegion event ต่อตัว (beacons ว่างตาม wire contract)
+     * Returns identifiers of regions silent past the timeout and removes
+     * them from "inside" — caller must emit exitRegion per entry
+     * (empty beacons list per the wire contract).
      */
     fun checkExits(nowMs: Long): List<String> {
         val exited = lastSeenAt.filterValues { nowMs - it > exitTimeoutMs }.keys.toList()
@@ -35,6 +37,6 @@ class RegionStateTracker(private val exitTimeoutMs: Long) {
         return exited
     }
 
-    /** region ที่อยู่สถานะ "ใน" ตอนนี้ — ใช้ทำ status text ของ notification */
+    /** Regions currently "inside" — used for the notification status text */
     fun insideRegions(): Set<String> = lastSeenAt.keys.toSet()
 }

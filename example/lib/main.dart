@@ -4,12 +4,9 @@ import 'package:background_beacon_sdk/background_beacon_sdk.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-import 'ads_api.dart';
-
-/// Live Activity (iOS 16.2+) — คุยกับ LiveActivityManager ใน Runner
-/// method: start / update, args: {text, count} — ไม่มี end การ์ดอยู่ตลอด
+/// Live Activity (iOS 16.2+) — talks to LiveActivityManager in Runner.
+/// Methods: start / update, args: {text, count} — no end; the card stays up.
 const _liveActivityChannel = MethodChannel(
   'background_beacon_sdk_example/live_activity',
 );
@@ -21,76 +18,42 @@ Future<void> _liveActivity(String method, String text, int count) async {
       'count': count,
     });
   } catch (_) {
-    // Android / iOS เก่า / extension ยังไม่ได้สร้าง — เงียบ ไม่กระทบ flow หลัก
+    // Android / older iOS / extension not created yet — stay silent,
+    // never disturb the main flow.
   }
 }
 
-/// กันยิง API/แจ้งเตือนซ้ำจุดเดิมรัว ๆ — ranged มาทุก ~5 วิ
-/// นับจาก "ครั้งที่ลอง resolve" ไม่ใช่ครั้งที่เจอโฆษณา — จุดที่ไม่มีโฆษณา (404)
-/// จะได้ไม่โดนถามซ้ำทุกรอบ scan
-const _adCooldown = Duration(minutes: 3);
+/// Ads backend — lives in config/dev.json only (same as BEACON_UUID).
+/// No flag = empty string → every resolve fails silently (ads are
+/// best-effort, scanning is unaffected) — _startMonitoring logs it once.
+const _adsBaseUrl = String.fromEnvironment('ADS_BASE_URL');
 
-/// id แจ้งเตือนคงที่ต่อจุด beacon — โฆษณาจุดเดิมแทนที่ตัวเก่า ไม่กองเป็นตั้ง
-/// (hashCode ของ Dart ไม่ stable ข้าม run/isolate — ทำเอง deterministic)
-int _adNotificationId(String key) =>
-    key.codeUnits.fold(0, (h, c) => (h * 31 + c) & 0x7fffffff);
+/// All timing values come from config/dev.json — tune them during field
+/// tests without touching code. (Must be read via `const` only — non-const
+/// reads always get the default.) Defaults are kept for the numbers:
+/// a missing flag would silently yield 0 (int.fromEnvironment), and
+/// scanIntervalMs = 0 means non-stop scanning.
+const _scanIntervalMs = int.fromEnvironment(
+  'SCAN_INTERVAL_MS',
+  defaultValue: 5000,
+);
+const _scanDurationMs = int.fromEnvironment(
+  'SCAN_DURATION_MS',
+  defaultValue: 2000,
+);
+const _adCooldownMinutes = int.fromEnvironment(
+  'AD_COOLDOWN_MINUTES',
+  defaultValue: 3,
+);
 
-/// เจอ beacon → ดึงโฆษณาของจุดนั้นจาก backend → เด้งแจ้งเตือน
-/// ใช้ได้จากทั้ง UI isolate และ background isolate
-/// (แต่ละ isolate ต้อง initialize notification plugin ของตัวเอง)
-/// cooldown เก็บใน prefs — background isolate เกิดใหม่ทุกครั้งที่ถูกปลุก
-/// ตัวแปร in-memory ใช้กันซ้ำไม่ได้
-///
-/// [log] — UI isolate ส่ง `_addLog` มาให้ขึ้นแผง log ในจอได้
-/// background isolate ไม่มี UI จึงตกไปที่ console แทน
-Future<void> showAdNotification(
-  Beacon beacon, {
-  void Function(String)? log,
-}) async {
-  final report = log ?? (String line) => debugPrint('ADS: $line');
-  final key = '${beacon.uuid}/${beacon.major}/${beacon.minor}';
-  final prefs = await SharedPreferences.getInstance();
-  final lastAttempt = prefs.getInt('ad_resolved_at/$key') ?? 0;
-  final now = DateTime.now().millisecondsSinceEpoch;
-  if (now - lastAttempt < _adCooldown.inMilliseconds) return;
-  await prefs.setInt('ad_resolved_at/$key', now);
-
-  report('ads: ยิง resolve สาขา ${beacon.major} จุด ${beacon.minor}');
-  final ad = await resolveAd(
-    uuid: beacon.uuid,
-    major: beacon.major,
-    minor: beacon.minor,
-  );
-  if (ad == null) {
-    // จุดนี้ไม่มีโฆษณา / server ล่ม — ไม่เด้งแจ้งเตือน
-    report('ads: ไม่มีโฆษณา สาขา ${beacon.major} จุด ${beacon.minor}');
-    return;
-  }
-  report('ads: เจอ "${ad.title}" → แจ้งเตือน');
-
-  final notifications = FlutterLocalNotificationsPlugin();
-  await notifications.initialize(
-    settings: const InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-      iOS: DarwinInitializationSettings(),
-    ),
-  );
-
-  await notifications.show(
-    id: _adNotificationId(key),
-    title: ad.title,
-    body: ad.content,
-    notificationDetails: const NotificationDetails(
-      android: AndroidNotificationDetails(
-        'beacon_promo',
-        'Beacon promotions',
-        importance: Importance.high,
-        priority: Priority.high,
-      ),
-      iOS: DarwinNotificationDetails(),
-    ),
-  );
-}
+/// One instance shared by the UI isolate and the background isolate —
+/// top-level because the background isolate has no State; cooldown state
+/// already lives in prefs. Cooldown is shorter than the SDK default so
+/// repeated testing is quick.
+final _ads = BeaconAds(
+  baseUrl: _adsBaseUrl,
+  cooldown: const Duration(minutes: _adCooldownMinutes),
+);
 
 void main() {
   runApp(const ExampleApp());
@@ -116,32 +79,32 @@ class BeaconTestPage extends StatefulWidget {
   State<BeaconTestPage> createState() => _BeaconTestPageState();
 }
 
-/// UUID เดียวของทั้ง fleet — scheme ที่ใช้: UUID = ระบบเรา,
-/// major = สาขา, minor = จุดติดตั้งในสาขา (map รายละเอียดใน database)
+/// Single UUID for the whole fleet — scheme: UUID = our system,
+/// major = branch, minor = install point (details mapped in the database).
 ///
-/// Override ได้ตอน build: `flutter run --dart-define-from-file=config/dev.json`
-/// (ต้องอ่านผ่าน `const` เท่านั้น — non-const จะได้ default เสมอ)
-/// fallback = UUID ของ app จำลอง beacon ยอดนิยม (AirLocate)
-const _fleetUuid = String.fromEnvironment(
-  'BEACON_UUID',
-  defaultValue: 'e2c56db5-dffb-48d2-b060-d0f5a71096e0',
-);
+/// Lives in config/dev.json only — no fallback in code: running without
+/// `--dart-define-from-file=config/dev.json` yields an empty string and
+/// _startMonitoring stops with a message (better than silently scanning
+/// for the wrong UUID).
+const _fleetUuid = String.fromEnvironment('BEACON_UUID');
 
-/// รับ event ตอน app โดน kill (Android) — รันใน background isolate ไม่มี UI
-/// ต้องเป็น top-level + `vm:entry-point` กัน AOT tree-shake
-/// ดูผลผ่าน `adb logcat | grep BG-BEACON` (setState/context ใช้ไม่ได้ที่นี่)
+/// Receives events after the app is killed (Android) — runs in a background
+/// isolate with no UI. Must be top-level + `vm:entry-point` so AOT doesn't
+/// tree-shake it. Watch via `adb logcat | grep BG-BEACON`
+/// (setState/context are unusable here).
 @pragma('vm:entry-point')
 Future<void> onBackgroundBeaconEvent(BeaconEvent event) async {
   debugPrint(
     'BG-BEACON: ${event.type.name} ${event.region} '
     '(${event.beacons.length} beacons)',
   );
-  // app โดน kill อยู่ก็เด้งโฆษณาได้ — หัวใจของระบบ
-  // ทั้ง enter/ranged เดินเส้นเดียวกัน: cooldown ใน prefs กันยิงซ้ำ
-  // (exit มากับ beacons ว่างตามสเปค — loop นี้เป็น no-op เอง)
-  // await สำคัญ: dispatcher รอเราเสร็จก่อนปล่อยให้ process ถูกเก็บ
+  // Ads still pop while the app is killed — the heart of the system.
+  // enter/ranged share one path: the prefs cooldown dedupes repeats.
+  // (exit carries an empty beacons list per spec — this loop no-ops.)
+  // The await matters: the dispatcher waits for us before letting the
+  // process be reclaimed.
   for (final beacon in event.beacons) {
-    await showAdNotification(beacon);
+    await _ads.showAdNotification(beacon);
   }
 }
 
@@ -154,12 +117,14 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
 
   StreamSubscription<BeaconEvent>? _subscription;
 
-  /// เก็บเป็น String พร้อมแสดง — event เก่าไม่ต้อง re-render ใหม่
-  /// ล่าสุดอยู่บนสุด, จำกัด 100 แถวกัน list โตไม่หยุด (ranged มาถี่)
+  /// Stored as display-ready Strings — old events never re-render.
+  /// Newest first, capped at 100 rows so the list can't grow unbounded
+  /// (ranged arrives often).
   final List<String> _log = [];
 
-  /// beacon ที่เห็นล่าสุด key `uuid/major/minor` — สำหรับแผง live ด้านบน
-  /// อัปเดตจาก ranged, ลบเมื่อ exit region หรือเงียบเกิน 30 วิ
+  /// Recently seen beacons keyed `uuid/major/minor` — feeds the live panel
+  /// up top. Updated from ranged; removed on region exit or after 30 s
+  /// of silence.
   final Map<String, _SeenBeacon> _seenBeacons = {};
 
   @override
@@ -168,14 +133,15 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
     _autoStart();
   }
 
-  /// เปิด app แล้ว scan เลยไม่ต้องกดปุ่ม: init → permission → start
-  /// dialog permission เด้งเฉพาะครั้งแรก (OS บังคับให้ user กดเอง) —
-  /// รอบถัดไปไหลเงียบจนถึง monitoring ไม่มีปุ่มหยุด/เริ่ม
+  /// Scan immediately on launch, no button: init → permission → start.
+  /// The permission dialog appears only on first run (the OS requires the
+  /// user's tap) — later runs flow silently into monitoring. No stop/start
+  /// buttons.
   Future<void> _autoStart() async {
     await _initialize();
-    if (_platform == null) return; // init พัง — log บอกแล้ว หยุดแค่นี้
-    // การ์ดขึ้นตั้งแต่เปิด app และอยู่ตลอด — ไม่มีจุดสั่ง end อีกแล้ว
-    // (หายเองตามระบบ: user ปัดทิ้ง / staleDate / เพดาน ~8 ชม.)
+    if (_platform == null) return; // init failed — already logged, stop here
+    // The card appears at launch and stays — nothing ever calls end.
+    // (It disappears on its own: user swipe / staleDate / ~8 h system cap.)
     await _liveActivity('start', 'กำลังหา beacon…', 0);
     await _requestPermissions();
     if (!_permissionGranted) {
@@ -190,8 +156,8 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
     await _startMonitoring();
   }
 
-  /// สิทธิ์แจ้งเตือน — Android 13+ / iOS ต้องขอ runtime
-  /// โดนปฏิเสธไม่ block การ scan — แค่กล่องแจ้งเตือนไม่โชว์
+  /// Notification permission — Android 13+ / iOS require a runtime request.
+  /// Denial doesn't block scanning — ad notifications just won't show.
   Future<void> _requestNotificationPermission() async {
     try {
       final plugin = FlutterLocalNotificationsPlugin();
@@ -217,8 +183,8 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
   }
 
   void _addLog(String line) {
-    // ลง console ด้วย — ดูจากเครื่อง dev ได้ (adb logcat / idevicesyslog)
-    // โดยไม่ต้องมี flutter run เกาะอยู่
+    // Mirror to console — visible from the dev machine (adb logcat /
+    // idevicesyslog) without a flutter run session attached.
     debugPrint('BEACON-LOG: $line');
     setState(() {
       final time = TimeOfDay.now();
@@ -250,31 +216,44 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
     }
   }
 
-  /// Region เดียวครอบทุก beacon ของ fleet (UUID เดียวกันหมด) —
-  /// ใช้ได้เหมือนกันทั้ง iOS/Android, แยกสาขา/จุดจาก major/minor ของแต่ละ beacon
+  /// One region covers every beacon in the fleet (they share one UUID) —
+  /// works identically on iOS/Android; branch/point come from each
+  /// beacon's major/minor.
   List<BeaconRegion> _regions() => [
     BeaconRegion(identifier: 'fleet', uuid: _fleetUuid),
   ];
 
   Future<void> _startMonitoring() async {
+    if (_fleetUuid.isEmpty) {
+      _addLog('empty BEACON_UUID value');
+      return;
+    }
+    if (_adsBaseUrl.isEmpty) {
+      // Broken ads never block scanning — one warning at start is enough.
+      _addLog('empty ADS_BASE_URL value — ads disabled');
+    }
     final regions = _regions();
     final settings = ScanSettings(
-      scanIntervalMs: 5000,
-      scanDurationMs: 2000,
-      // widget สถานะสดบนแถบแจ้งเตือน — scan ยังผ่าน PendingIntent (รอด kill)
+      scanIntervalMs: _scanIntervalMs,
+      scanDurationMs: _scanDurationMs,
+      // Live status widget on the notification shade — scanning still goes
+      // through PendingIntent (survives kill).
       foregroundServiceNotification: true,
       beaconLayout: 'iBeacon',
       rangingEnabled: true,
-      // iOS: ranging ไหลต่อตอนพับ app (แลกแบต — ปิดได้ถ้าเอาแค่ enter/exit)
+      // iOS: ranging keeps flowing while backgrounded — keep-alive runs only
+      // while inside a region (starts on first enter, stops after leaving
+      // all). Turn off if enter/exit alone is enough.
       continuousRanging: true,
     );
     try {
-      // listen ก่อน start — กัน event ชุดแรกหลุดช่วงรอ await
+      // Listen before start — don't lose the first events during the await.
       _subscription ??= _manager.onBeaconEvent.listen(
         _onEvent,
         onError: (Object e) => _addLog('stream error: $e'),
       );
-      // ให้ event ยังถึง Dart แม้ app โดน kill (Android; iOS เป็น no-op)
+      // Keep events reaching Dart even after the app is killed
+      // (Android; no-op on iOS).
       await _manager.registerBackgroundCallback(onBackgroundBeaconEvent);
       await _manager.startMonitoring(regions, settings);
       setState(() => _monitoring = true);
@@ -305,10 +284,10 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
       case BeaconEventType.enterRegion:
         _addLog('ENTER ${event.region}');
         for (final beacon in event.beacons) {
-          unawaited(showAdNotification(beacon, log: _addLog));
+          unawaited(_ads.showAdNotification(beacon, log: _addLog));
         }
-        // 'start' idempotent: มีการ์ดอยู่ = update / ไม่มี (เช่นเพิ่งถูก
-        // relaunch จาก kill) = สร้างใหม่ — ครอบทั้งสองเคส
+        // 'start' is idempotent: card exists = update / none (e.g. just
+        // relaunched from kill) = create — covers both cases.
         _liveActivity(
           'start',
           'อยู่ในเขต ${event.region}',
@@ -316,18 +295,19 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
         );
       case BeaconEventType.exitRegion:
         _addLog('EXIT ${event.region}');
-        // การ์ดอยู่ต่อ — แค่บอกสถานะ (ไม่มีการ end จากฝั่ง app แล้ว)
+        // Card stays up — just report status (the app never calls end).
         _liveActivity('update', 'ไม่พบ beacon ในพื้นที่', 0);
-        // beacon ของ region นี้ถือว่าหาย — event ไม่บอกราย beacon
-        // (beacons ว่างตามสเปค) จึงกวาดด้วย prefix ของ region แทน
+        // All beacons of this region are considered gone — the event names
+        // no beacons (empty list per spec), so sweep by region instead.
         setState(() {
           _seenBeacons.removeWhere((_, s) => s.region == event.region);
         });
       case BeaconEventType.ranged:
-        // enter อาจมาพร้อม beacon ตัวแรกตัวเดียว — จุดอื่นในไซต์เดียวกัน
-        // โผล่ผ่าน ranged; cooldown ใน showAdNotification กันยิงซ้ำทุก ~5 วิ
+        // enter may carry only the first beacon — other points on the same
+        // site surface via ranged; the cooldown inside showAdNotification
+        // stops re-fires every ~5 s.
         for (final beacon in event.beacons) {
-          unawaited(showAdNotification(beacon, log: _addLog));
+          unawaited(_ads.showAdNotification(beacon, log: _addLog));
         }
         setState(() {
           for (final b in event.beacons) {
@@ -336,7 +316,7 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
               region: event.region,
             );
           }
-          // ตัวที่เงียบเกิน 30 วิถือว่าหาย — กันรายการค้างสะสม
+          // Silent for over 30 s = gone — keeps stale rows from piling up.
           final cutoff = DateTime.now().subtract(const Duration(seconds: 30));
           _seenBeacons.removeWhere(
             (_, s) => s.beacon.lastSeen.isBefore(cutoff),
@@ -347,7 +327,8 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
             'UUID ${b.uuid} '
             'ranged สาขา ${b.major} จุด ${b.minor} '
             'rssi=${b.rssi} ~${b.distance.toStringAsFixed(1)}m'
-            // MAC มีเฉพาะ Android — ใช้เทียบ sticker ข้างเครื่องตอนติดตั้ง
+            // MAC is Android-only — matched against the device sticker
+            // during installation.
             '${b.mac != null ? ' [${b.mac}]' : ''}',
           );
         }
@@ -391,8 +372,9 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    // ทุกขั้น (init/permission/start) รันเองตอนเปิด app
-                    // ไม่มีปุ่มหยุด/เริ่ม — scan และ Live Activity อยู่ตลอด
+                    // Every step (init/permission/start) runs itself at
+                    // launch. No stop/start buttons — scanning and the
+                    // Live Activity are always on.
                     OutlinedButton(
                       onPressed:
                           initialized && _permissionGranted && !_monitoring
@@ -433,7 +415,7 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
     );
   }
 
-  /// แผง live ของ beacon ที่เห็นตอนนี้ — เรียงใกล้สุดก่อน
+  /// Live panel of currently visible beacons — nearest first.
   Widget _buildSeenBeaconsPanel(BuildContext context) {
     final seen = _seenBeacons.values.toList()
       ..sort((a, b) => a.beacon.distance.compareTo(b.beacon.distance));
@@ -451,7 +433,8 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
           if (seen.isEmpty)
             Text('— ไม่มี —', style: Theme.of(context).textTheme.bodySmall)
           else
-            // จำกัดความสูง — beacon เยอะให้ scroll ในแผงตัวเอง ไม่เบียด log
+            // Cap the height — many beacons scroll inside their own panel
+            // instead of squeezing the log.
             ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 140),
               child: ListView(
@@ -471,7 +454,7 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         children: [
-          // ยิ่งใกล้ยิ่งเขียว — เกณฑ์หยาบ ๆ พอไล่สายตาได้
+          // Greener when closer — rough thresholds, enough to eyeball.
           Icon(
             Icons.bluetooth,
             size: 16,
@@ -484,8 +467,8 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              // major/minor = สาขา/จุด ตาม scheme ของ fleet — ชื่อจริง map จาก DB
-              // mac (Android เท่านั้น) ไว้เทียบ sticker ข้างเครื่อง
+              // major/minor = branch/point per fleet scheme — real names map
+              // from the DB. mac (Android-only) matches the device sticker.
               'สาขา ${b.major}  จุด ${b.minor}  '
               'rssi ${b.rssi}  ~${b.distance.toStringAsFixed(1)}m'
               '${b.mac != null ? '  ${b.mac}' : ''}'
@@ -500,8 +483,8 @@ class _BeaconTestPageState extends State<BeaconTestPage> {
   }
 }
 
-/// Beacon ที่เห็นล่าสุด + region ที่มันสังกัด (ranged event บอก region
-/// แต่ตัว Beacon ไม่ได้เก็บ — ผูกไว้ด้วยกันตรงนี้)
+/// A recently seen beacon plus the region it belongs to (the ranged event
+/// names the region but Beacon itself doesn't carry it — tied together here).
 class _SeenBeacon {
   const _SeenBeacon({required this.beacon, required this.region});
 

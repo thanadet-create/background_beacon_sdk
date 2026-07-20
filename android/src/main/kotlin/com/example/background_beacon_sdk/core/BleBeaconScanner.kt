@@ -10,27 +10,31 @@ import android.os.Handler
 import android.os.Looper
 
 /**
- * Implementation กลางด้วย android.bluetooth.le — ใช้ได้ทั้ง GMS/HMS device
- * (การ scan ไม่ได้พึ่ง Google/Huawei lib)
+ * Core implementation on android.bluetooth.le — works on both GMS/HMS
+ * devices (scanning does not depend on Google/Huawei libs).
  *
- * โหมด monitoring:
- * - API 26+ → PendingIntent scan เสมอ: OS scan ให้เอง รอด process kill
- *   ส่งผลเป็น batch ทุก ~`scanIntervalMs` เข้า [BeaconScanReceiver]
- * - API < 26 → duty cycle callback scan (scan `scanDurationMs` พักจนครบ
- *   `scanIntervalMs`) — ตายพร้อม process
- * - `foregroundServiceNotification = true` เพิ่ม foreground service ทับอีกชั้น:
- *   notification สถานะสด + พยุง process ไม่ให้โดนเก็บง่าย
+ * Monitoring modes:
+ * - API 26+ → always PendingIntent scan: the OS scans on our behalf,
+ *   survives process kill, delivers batches every ~`scanIntervalMs` to
+ *   [BeaconScanReceiver]
+ * - API < 26 → duty-cycle callback scan (scan for `scanDurationMs`, rest
+ *   until `scanIntervalMs` elapses) — dies with the process
+ * - `foregroundServiceNotification = true` layers a foreground service on
+ *   top: live status notification + keeps the process from easy reclaim
  *
- * Event ที่ผลิต:
- * - enterRegion: ยิงทันทีที่เห็น beacon แรกของ region (latency สำคัญ)
- * - ranged: aggregate ต่อรอบ scan — หนึ่ง event ต่อ region ต่อรอบ
- *   (ไม่ยิงราย advertisement แล้ว — beacon 10Hz จะ flood stream)
- * - exitRegion: จาก [RegionStateTracker] เมื่อ region เงียบเกิน timeout
+ * Events produced:
+ * - enterRegion: fired the moment the region's first beacon is seen
+ *   (latency matters)
+ * - ranged: aggregated per scan cycle — one event per region per cycle
+ *   (never per advertisement — a 10 Hz beacon would flood the stream)
+ * - exitRegion: from [RegionStateTracker] once a region stays silent past
+ *   the timeout
  *
- * Thread model: state ทุกตัวแตะจาก main thread เท่านั้น — ผล scan จาก
- * binder thread / receiver ถูก post เข้า [mainHandler] ก่อนเสมอ
+ * Thread model: all state is touched from the main thread only — scan
+ * results from binder threads / the receiver are always posted through
+ * [mainHandler] first.
  */
-@SuppressLint("MissingPermission") // Dart layer บังคับ requestPermissions ก่อน start
+@SuppressLint("MissingPermission") // Dart layer enforces requestPermissions before start
 open class BleBeaconScanner(private val context: Context) : BeaconScanner {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -43,10 +47,10 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
     private var callbackScanActive = false
     private var pendingIntentScanActive = false
 
-    /** sighting สะสมรอรอบ flush — key ราย beacon กันตัวซ้ำ, เก็บค่าอ่านล่าสุด */
+    /** Sightings accumulated for the next flush — keyed per beacon to dedupe, latest reading kept */
     private val cycleSightings = LinkedHashMap<String, Pair<String, BeaconData>>()
 
-    /** จำนวน beacon รอบ flush ล่าสุด — ใช้แต่งข้อความ notification */
+    /** Beacon count from the last flush — used to word the notification */
     private var lastSeenBeaconCount = 0
 
     private val bleScanner
@@ -71,29 +75,32 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         regions: List<BeaconRegionData>,
         settings: ScanSettingsData,
     ) {
-        stopMonitoring() // contract ฝั่ง Dart: เรียกซ้ำ = แทนที่ชุดเดิมทั้งหมด
+        stopMonitoring() // Dart-side contract: calling again replaces the entire previous set
         this.regions = regions
         this.settings = settings
         tracker = RegionStateTracker(settings.exitTimeoutMs)
         scanning = true
 
-        // persist ให้ headless mode (process โดน kill) กับ BootReceiver ใช้ต่อ
+        // Persist for headless mode (process killed) and BootReceiver to reuse
         BeaconStore.saveMonitoring(context, regions, settings)
-        // session ใหม่ต้องเริ่ม state ว่าง — inside ค้างจาก headless รอบก่อน
-        // (stopMonitoring ไม่ถูกเรียกตอนโดน kill) จะทำให้ enter ไม่ fire อีกเลย
+        // A new session must start with clean state — stale inside flags from
+        // a previous headless run (stopMonitoring is never called on kill)
+        // would keep enter from ever firing again.
         BeaconStore.clearInsideState(context)
 
-        // เช็คตรงนี้ที่เดียว — ทางที่ throw ได้ต้องอยู่ใน startMonitoring เท่านั้น
-        // (plugin มี try/catch → START_FAILED) cycle runnable ที่มาทีหลัง fail เงียบ
+        // Check here and only here — throwing paths must stay inside
+        // startMonitoring (the plugin has try/catch → START_FAILED); cycle
+        // runnables that come later fail silently.
         if (bleScanner == null) {
             scanning = false
             throw IllegalStateException("Bluetooth adapter unavailable or disabled")
         }
 
-        // FGS มีหน้าที่แค่โชว์สถานะ + พยุง process — ตัว scan ใช้ PendingIntent
-        // เสมอ (API 26+) เพื่อรอด process kill: โดน kill แล้ว widget หาย
-        // (start FGS จาก background โดน Android 12+ ห้าม) แต่ scan + headless
-        // ยังทำงานต่อ widget กลับมาตอนเปิด app ใหม่
+        // The FGS only shows status + props up the process — scanning always
+        // goes through PendingIntent (API 26+) to survive kill: after a kill
+        // the widget disappears (Android 12+ forbids starting an FGS from
+        // background) but scan + headless keep working; the widget returns
+        // when the app reopens.
         if (settings.foregroundServiceNotification) {
             BeaconForegroundService.start(context)
         }
@@ -110,7 +117,7 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         if (!scanning) return
         scanning = false
 
-        // ห้าม removeCallbacksAndMessages(null) — จะพา timeout ของ detectBeacon ตายด้วย
+        // Never removeCallbacksAndMessages(null) — it would kill detectBeacon's timeout too
         mainHandler.removeCallbacks(startCycleRunnable)
         mainHandler.removeCallbacks(endCycleRunnable)
         mainHandler.removeCallbacks(exitCheckRunnable)
@@ -126,7 +133,7 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
             }
             pendingIntentScanActive = false
         }
-        BeaconForegroundService.stop(context) // no-op ถ้าไม่ได้ start
+        BeaconForegroundService.stop(context) // no-op if never started
         BeaconStore.clearMonitoring(context)
 
         cycleSightings.clear()
@@ -141,9 +148,10 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
     ) {
         val scanner = bleScanner ?: return mainHandler.post { callback(false) }.let { }
 
-        // scan ชั่วคราวด้วย callback แยก — ไม่กระทบ scan หลักที่ monitor ค้างอยู่
-        // ทุกการตัดสินใจ (เจอ/timeout) ถูก post เข้า main thread เพื่อกัน race
-        // ระหว่าง binder thread กับ timeout — `done` ถูกอ่าน/เขียนบน main เท่านั้น
+        // Temporary scan with its own callback — never touches the main
+        // monitoring scan. Every decision (found/timeout) is posted to the
+        // main thread to prevent a binder-thread vs timeout race — `done`
+        // is read/written on main only.
         var done = false
         lateinit var oneShot: ScanCallback
         oneShot = object : ScanCallback() {
@@ -168,10 +176,10 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         }, timeoutMs)
     }
 
-    // ---- ทางเข้าผล scan (main thread เสมอ) ----
+    // ---- scan result entry point (always main thread) ----
 
     private fun processResult(result: ScanResult) {
-        if (!scanning) return // ผลค้างท่อหลัง stop — ทิ้ง
+        if (!scanning) return // stale result in the pipe after stop — drop
         val beacon = BeaconParser.parse(result) ?: return
         val region = regions.firstOrNull {
             it.matches(beacon.uuid, beacon.major, beacon.minor)
@@ -187,7 +195,7 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         }
     }
 
-    /** ยิง ranged หนึ่ง event ต่อ region จาก sighting ที่สะสมไว้ แล้วเริ่มรอบใหม่ */
+    /** Emit one ranged event per region from accumulated sightings, then start a new cycle */
     private fun flushRanged() {
         if (cycleSightings.isEmpty()) return
         lastSeenBeaconCount = cycleSightings.size
@@ -204,15 +212,16 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         listener?.invoke(event)
     }
 
-    // ---- โหมด duty cycle (callback scan) ----
+    // ---- duty cycle mode (callback scan) ----
 
     private val startCycleRunnable = Runnable { startScanCycle() }
     private val endCycleRunnable = Runnable { endScanCycle() }
 
     private fun startScanCycle() {
         if (!scanning) return
-        // Bluetooth โดนปิดกลางคัน — ข้ามรอบนี้แล้วลองใหม่ ห้าม throw:
-        // ตรงนี้รันจาก Handler ไม่มีใคร catch (exception = app crash)
+        // Bluetooth turned off mid-flight — skip this cycle and retry, never
+        // throw: this runs from a Handler with no one catching
+        // (exception = app crash)
         val scanner = bleScanner ?: run {
             mainHandler.postDelayed(startCycleRunnable, settings!!.scanIntervalMs.toLong())
             return
@@ -232,20 +241,21 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
             callbackScanActive = false
             mainHandler.postDelayed(startCycleRunnable, pauseMs)
         } else {
-            // duration ≥ interval = scan ต่อเนื่อง — ไม่ stop แค่ flush ตามรอบ
+            // duration ≥ interval = continuous scan — never stop, just flush per cycle
             mainHandler.postDelayed(endCycleRunnable, s.scanDurationMs.toLong())
         }
     }
 
-    // ---- โหมด PendingIntent (API 26+) ----
+    // ---- PendingIntent mode (API 26+) ----
 
     private fun startPendingIntentScan(settings: ScanSettingsData) {
         ScanSession.resultHandler = { results ->
-            // receiver ปลุกมาบน main thread อยู่แล้ว แต่ contract เราคือ post เสมอ
-            // — กัน implementation detail ของระบบเปลี่ยนแล้ว state พัง
+            // The receiver already wakes on the main thread, but our contract
+            // is to always post — so a system implementation-detail change
+            // can't corrupt state.
             mainHandler.post {
                 results.forEach(::processResult)
-                flushRanged() // โหมดนี้ไม่มีรอบ scan ของตัวเอง — flush ต่อ batch
+                flushRanged() // this mode has no scan cycle of its own — flush per batch
             }
         }
 
@@ -256,7 +266,7 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         pendingIntentScanActive = true
     }
 
-    // ---- exit detection (ทุกโหมด) ----
+    // ---- exit detection (all modes) ----
 
     private val exitCheckRunnable = object : Runnable {
         override fun run() {
@@ -273,7 +283,7 @@ open class BleBeaconScanner(private val context: Context) : BeaconScanner {
         }
     }
 
-    /** สรุปสถานะขึ้น notification ของ foreground service (เฉพาะโหมดนั้น) */
+    /** Summarize status onto the foreground service notification (that mode only) */
     private fun updateServiceStatus() {
         if (settings?.foregroundServiceNotification != true) return
         val inside = tracker?.insideRegions().orEmpty()

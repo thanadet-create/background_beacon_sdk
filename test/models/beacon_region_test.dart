@@ -30,7 +30,7 @@ void main() {
     });
 
     test('normalizes uuid to lowercase', () {
-      // ป้อนพิมพ์ใหญ่ (แบบที่ iOS รายงาน) ต้องออกมาพิมพ์เล็กเสมอ
+      // Uppercase input (the way iOS reports it) must always come out lowercase
       final region = BeaconRegion(
         identifier: 'entrance',
         uuid: testFleetUuid.toUpperCase(),
@@ -53,11 +53,11 @@ void main() {
 
       expect(result, region);
       expect(result.uuid, isNull);
-      expect(region.toMap()['uuid'], isNull); // wire contract: ส่ง null จริง
+      expect(region.toMap()['uuid'], isNull); // wire contract: a real null is sent
     });
 
     test('major without uuid throws assertion error', () {
-      // wildcard uuid + เจาะจง major = ความหมายกำกวม — บังคับให้ระบุ uuid ก่อน
+      // wildcard uuid + specific major = ambiguous meaning — require uuid first
       expect(
         () => BeaconRegion(identifier: 'x', major: 1),
         throwsAssertionError,

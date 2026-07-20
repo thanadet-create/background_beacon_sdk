@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
-/// Mock ที่ตอบ detectMobileServices ตามค่าที่ตั้ง และนับจำนวนครั้งที่ถูกเรียก
+/// Mock answering detectMobileServices with a preset value, counting invocations
 class MockPlatform extends BackgroundBeaconPlatform
     with MockPlatformInterfaceMixin {
   MockPlatform(this.services);
@@ -23,7 +23,7 @@ void main() {
   const detector = PlatformDetector();
 
   tearDown(() {
-    // ไม่ reset = test อื่นทั้ง suite เพี้ยนตาม override ล่าสุด
+    // No reset = every other test in the suite drifts with the last override
     debugDefaultTargetPlatformOverride = null;
   });
 

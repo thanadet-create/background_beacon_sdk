@@ -4,6 +4,7 @@ import 'package:background_beacon_sdk/src/models/beacon_region.dart';
 import 'package:background_beacon_sdk/src/models/scan_settings.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
+// use PlatformInterface for Federated Plugins
 abstract class BackgroundBeaconPlatform extends PlatformInterface {
   static final Object _token = Object();
   static BackgroundBeaconPlatform _instance = MethodChannelBackgroundBeacon();

@@ -6,16 +6,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Persistence สำหรับ state ที่ต้องรอด process death — SharedPreferences
+ * Persistence for state that must survive process death — SharedPreferences.
  *
- * ใครใช้: HeadlessBeaconRunner (โหลด config ตอนถูกปลุกโดยไม่มี engine),
- * BootReceiver (restart scan หลัง reboot), BleBeaconScanner (เขียนตอน start/stop)
+ * Consumers: HeadlessBeaconRunner (loads config when woken with no engine),
+ * BootReceiver (restarts the scan after reboot), BleBeaconScanner (writes on
+ * start/stop).
  *
- * เก็บ:
- * - callback handles (dispatcher + user) จาก registerBackgroundCallback
- * - ชุด regions + settings ของ monitoring ที่ active อยู่
- * - inside-state ของ headless mode (identifier → lastSeen ms)
- *   แยกจาก state ใน RegionStateTracker ของ in-process mode — คนละ lifecycle
+ * Stores:
+ * - callback handles (dispatcher + user) from registerBackgroundCallback
+ * - the active monitoring region set + settings
+ * - headless-mode inside-state (identifier → lastSeen ms), separate from
+ *   in-process RegionStateTracker state — different lifecycle
  */
 internal object BeaconStore {
 
@@ -38,7 +39,7 @@ internal object BeaconStore {
             .apply()
     }
 
-    /** คืน (dispatcherHandle, callbackHandle) — null ถ้ายังไม่เคย register */
+    /** Returns (dispatcherHandle, callbackHandle) — null if never registered */
     fun loadCallbackHandles(context: Context): Pair<Long, Long>? {
         val p = prefs(context)
         if (!p.contains(KEY_DISPATCHER_HANDLE)) return null
@@ -103,13 +104,13 @@ internal object BeaconStore {
             scanDurationMs = json.getInt("scanDurationMs"),
             foregroundServiceNotification = json.getBoolean("foregroundServiceNotification"),
             beaconLayout = json.getString("beaconLayout"),
-            // optBoolean: JSON เก่าจาก install ก่อนหน้าไม่มี key นี้
+            // optBoolean: older JSON from a previous install lacks this key
             continuousRanging = json.optBoolean("continuousRanging", false),
             rangingEnabled = json.getBoolean("rangingEnabled"),
         )
     }
 
-    /** มี monitoring ค้างอยู่ไหม — ใช้ตัดสินว่า BootReceiver ต้อง restart scan */
+    /** Is monitoring still active — decides whether BootReceiver restarts the scan */
     fun hasActiveMonitoring(context: Context): Boolean =
         prefs(context).contains(KEY_REGIONS)
 
@@ -130,9 +131,10 @@ internal object BeaconStore {
     }
 
     /**
-     * ล้างตอน startMonitoring — state ของ session เก่าห้ามรั่วข้ามมา:
-     * ค่า inside ค้างจาก headless รอบก่อนจะกด enterRegion ของ session ใหม่เงียบ
-     * (kill app แล้วไม่มี enter อีกเลยตราบใดที่ beacon ยังมองเห็น)
+     * Cleared on startMonitoring — old session state must not leak across:
+     * stale inside flags from a previous headless run silently suppress the
+     * new session's enterRegion (kill the app and enter never fires again
+     * while the beacon stays visible).
      */
     fun clearInsideState(context: Context) {
         prefs(context).edit().remove(KEY_INSIDE_STATE).apply()

@@ -4,12 +4,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// Data classes ฝั่ง Kotlin ที่ mirror models ฝั่ง Dart
-// wire contract (ชื่อ key / format) ดู dartdoc ใน lib/src/models/ เป็น spec
+// Kotlin data classes mirroring the Dart models.
+// For the wire contract (key names / formats) the dartdoc in lib/src/models/ is the spec.
 
 data class BeaconRegionData(
     val identifier: String,
-    /** null = wildcard จับทุก UUID (chip filter จับ iBeacon ทุกตัวอยู่แล้ว) */
+    /** null = wildcard matching every UUID (the chip filter already catches all iBeacons) */
     val uuid: String?,
     val major: Int?,
     val minor: Int?,
@@ -18,14 +18,14 @@ data class BeaconRegionData(
         @Suppress("UNCHECKED_CAST")
         fun fromMap(map: Map<String, Any?>): BeaconRegionData = BeaconRegionData(
             identifier = map["identifier"] as String,
-            // Dart normalize เป็น lowercase อยู่แล้ว — lowercase ซ้ำกันพลาดฝั่งเดียวพอ
+            // Dart already normalizes to lowercase — lowercasing again guards one-sided slips
             uuid = (map["uuid"] as String?)?.lowercase(),
             major = (map["major"] as Number?)?.toInt(),
             minor = (map["minor"] as Number?)?.toInt(),
         )
     }
 
-    /// uuid/major/minor เป็น null = wildcard จับทุกค่า
+    /// null uuid/major/minor = wildcard matching any value
     fun matches(uuid: String, major: Int, minor: Int): Boolean =
         (this.uuid == null || this.uuid == uuid) &&
             (this.major == null || this.major == major) &&
@@ -38,14 +38,15 @@ data class ScanSettingsData(
     val foregroundServiceNotification: Boolean,
     val beaconLayout: String,
     val rangingEnabled: Boolean,
-    /** iOS-only (location keep-alive) — Android รับไว้ตาม contract แต่ไม่ใช้ */
+    /** iOS-only (location keep-alive) — Android accepts it per contract but never uses it */
     val continuousRanging: Boolean = false,
 ) {
     /**
-     * เงียบนานแค่ไหนถึงนับว่าออกจาก region — ต้องครอบรอบ scan ที่พลาดได้
-     * อย่างน้อย 2 รอบเต็ม (beacon อาจหลุดรอบเดียวจากสัญญาณวูบ) และไม่ต่ำกว่า
-     * 10 วิ กัน interval สั้น ๆ ทำ exit เด้งเข้า-ออกรัว
-     * ใช้ทั้ง in-process (BleBeaconScanner) และ headless (HeadlessBeaconRunner)
+     * How long a region stays silent before it counts as exited — must cover
+     * at least 2 full missed scan cycles (a beacon can drop one cycle on a
+     * signal dip) and never below 10 s so short intervals can't make exit
+     * flap. Used by both in-process (BleBeaconScanner) and headless
+     * (HeadlessBeaconRunner).
      */
     val exitTimeoutMs: Long
         get() = maxOf(10_000L, scanIntervalMs * 2L + scanDurationMs)
@@ -57,7 +58,7 @@ data class ScanSettingsData(
             foregroundServiceNotification = map["foregroundServiceNotification"] as Boolean,
             beaconLayout = map["beaconLayout"] as String,
             rangingEnabled = map["rangingEnabled"] as Boolean,
-            // safe-cast: key เพิ่มทีหลัง — persisted JSON เก่าไม่มี
+            // safe-cast: key added later — older persisted JSON lacks it
             continuousRanging = (map["continuousRanging"] as? Boolean) ?: false,
         )
     }
@@ -71,7 +72,7 @@ data class BeaconData(
     val txPower: Int,
     val distance: Double,
     val lastSeen: Date,
-    /** Bluetooth MAC ของตัวเครื่อง — debug/inventory เท่านั้น (iOS ไม่มีค่านี้) */
+    /** The device's Bluetooth MAC — debug/inventory only (absent on iOS) */
     val mac: String? = null,
 ) {
     fun toMap(): Map<String, Any?> = mapOf(
@@ -87,7 +88,7 @@ data class BeaconData(
 }
 
 data class BeaconEventData(
-    // ต้องตรงชื่อ enum ฝั่ง Dart เป๊ะ: "enterRegion" | "exitRegion" | "ranged"
+    // Must match the Dart enum names exactly: "enterRegion" | "exitRegion" | "ranged"
     val type: String,
     val region: String,
     val beacons: List<BeaconData>,
@@ -101,7 +102,7 @@ data class BeaconEventData(
     )
 }
 
-// local time ไม่มี timezone suffix — ตรงกับ DateTime.parse ฝั่ง Dart
-// SimpleDateFormat ไม่ thread-safe จึงสร้างใหม่ต่อ call (ปริมาณ event ต่ำพอ)
+// Local time without timezone suffix — matches DateTime.parse on Dart.
+// SimpleDateFormat is not thread-safe, so create per call (event volume is low enough).
 internal fun iso8601(date: Date): String =
     SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US).format(date)

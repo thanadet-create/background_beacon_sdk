@@ -89,15 +89,15 @@ void main() {
 
     test('beaconEvents decodes event map from native into BeaconEvent',
         () async {
-      // ack listen/cancel ของ EventChannel
+      // ack the EventChannel's listen/cancel
       messenger.setMockMessageHandler(eventChannelName,
           (message) async => codec.encodeSuccessEnvelope(null));
 
       final firstEvent = platform.beaconEvents.first;
       await pumpEventQueue();
 
-      // inject event ผ่าน codec จริง — map จะ decode เป็น Map<Object?, Object?>
-      // เหมือนที่ native ส่งมา ทดสอบ cast chain ทั้งเส้น
+      // Inject the event through the real codec — the map decodes as
+      // Map<Object?, Object?> just like native sends, testing the whole cast chain
       await messenger.handlePlatformMessage(
         eventChannelName,
         codec.encodeSuccessEnvelope(<String, dynamic>{

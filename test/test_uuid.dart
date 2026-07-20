@@ -1,5 +1,5 @@
-/// UUID กลางของ fixture ทุก test — default = fleet UUID จริง
-/// (ค่าเดียวกับ `example/config/dev.json`) จะรันให้ตรง config อื่นก็ได้:
+/// Shared fixture UUID for every test — default = the real fleet UUID
+/// (same value as `example/config/dev.json`); run against another config with:
 /// `flutter test --dart-define-from-file=example/config/dev.json`
 const testFleetUuid = String.fromEnvironment(
   'BEACON_UUID',

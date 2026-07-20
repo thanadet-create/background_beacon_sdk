@@ -6,12 +6,12 @@ import java.util.Date
 import kotlin.math.pow
 
 /**
- * แปลง raw BLE advertisement → [BeaconData]
+ * Parses a raw BLE advertisement → [BeaconData].
  *
- * iBeacon layout ใน manufacturer data ของ Apple (company ID 0x004C):
+ * iBeacon layout inside Apple's manufacturer data (company ID 0x004C):
  * ```
  * [0]=0x02 [1]=0x15 | [2..17]=UUID | [18..19]=major | [20..21]=minor | [22]=txPower
- *  (prefix คงที่)                     (big endian)     (big endian)    (signed byte)
+ *  (fixed prefix)                    (big endian)     (big endian)    (signed byte)
  * ```
  */
 object BeaconParser {
@@ -23,10 +23,10 @@ object BeaconParser {
             ?.getManufacturerSpecificData(APPLE_MANUFACTURER_ID)
             ?: return null
         if (data.size < 23 || data[0] != IBEACON_PREFIX[0] || data[1] != IBEACON_PREFIX[1]) {
-            return null // manufacturer data ของ Apple แต่ไม่ใช่ iBeacon (เช่น AirPods)
+            return null // Apple manufacturer data but not iBeacon (e.g. AirPods)
         }
 
-        // UUID 16 bytes → hex 8-4-4-4-12 lowercase (wire contract ฝั่ง Dart)
+        // UUID 16 bytes → hex 8-4-4-4-12 lowercase (Dart wire contract)
         val uuid = buildString {
             for (i in 2 until 18) {
                 append("%02x".format(data[i]))
@@ -45,19 +45,20 @@ object BeaconParser {
             txPower = txPower,
             distance = estimateDistance(result.rssi, txPower),
             lastSeen = Date(),
-            // MAC จาก packet header — ตรงกับ sticker ข้างเครื่อง
-            // (อ่านได้ด้วย BLUETOOTH_SCAN ไม่ต้องขอ CONNECT เพิ่ม)
+            // MAC from the packet header — matches the sticker on the device
+            // (readable with BLUETOOTH_SCAN, no extra CONNECT needed)
             mac = result.device?.address,
         )
     }
 
-    // log-distance path loss model, exponent 2.0 = ที่โล่ง — ค่าประมาณหยาบ
+    // log-distance path loss model, exponent 2.0 = open space — rough estimate
     private fun estimateDistance(rssi: Int, txPower: Int): Double =
         10.0.pow((txPower - rssi) / 20.0)
 
     /**
-     * กรอง iBeacon ตั้งแต่ระดับ chip (ประหยัดแบต + จำเป็นสำหรับ PendingIntent scan)
-     * mask 0x01,0x01 = เทียบเฉพาะ 2 bytes แรก (prefix 0x02 0x15)
+     * Filter iBeacon at the chip level (saves battery + required for the
+     * PendingIntent scan). Mask 0x01,0x01 = compare only the first 2 bytes
+     * (prefix 0x02 0x15).
      */
     fun scanFilters(): List<ScanFilter> = listOf(
         ScanFilter.Builder()

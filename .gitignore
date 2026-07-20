@@ -26,5 +26,5 @@ build/
 # plugin เป็น library — lock file ปล่อยให้ app ผู้ใช้เป็นคนตรึงเวอร์ชัน
 pubspec.lock
 
-# ค่า config ประจำเครื่อง dev (ngrok URL หมุนได้) — copy จาก dev.json.example
-example/config/dev.json
+CLAUDE.md
+

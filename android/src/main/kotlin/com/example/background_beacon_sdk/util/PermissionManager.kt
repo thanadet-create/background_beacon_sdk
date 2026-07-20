@@ -9,21 +9,25 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
 
 /**
- * จัดการ runtime permission สำหรับ BLE scan — สองจังหวะ:
+ * Runtime permissions for BLE scanning — two phases:
  *
- * 1. ชุด foreground (BLUETOOTH_SCAN / FINE_LOCATION) — dialog ปกติ
- * 2. ACCESS_BACKGROUND_LOCATION (API 29+) — **ต้องขอแยกหลังชุดแรกผ่านแล้ว**
- *    (ระบบห้ามขอรวม dialog เดียว) ไม่มีตัวนี้ = ผล scan โดนตัดทันทีที่ app
- *    ลง background ทั้งที่ scan ยังวิ่งอยู่
- *    - API 29: dialog มีตัวเลือก "ตลอดเวลา" ให้เลย
- *    - API 30+: ระบบพาไปหน้า Settings ให้ user เลือก "Allow all the time" เอง
+ * 1. Foreground set (BLUETOOTH_SCAN / FINE_LOCATION) — normal dialog
+ * 2. ACCESS_BACKGROUND_LOCATION (API 29+) — **must be requested separately
+ *    after phase 1 passes** (the system forbids combining them in one
+ *    dialog). Without it scan results are cut the moment the app goes
+ *    background even though the scan keeps running.
+ *    - API 29: the dialog offers "Allow all the time" directly
+ *    - API 30+: the system routes to Settings; the user picks
+ *      "Allow all the time" there
  *
- * ค่าที่คืน Dart = ชุด foreground ครบไหม (scan ตอนเปิด app ใช้ได้ทันที)
- * background เป็น best effort — โดนปฏิเสธแค่ log เตือน ไม่ block การใช้งาน
+ * Value returned to Dart = is the foreground set complete (scanning while
+ * the app is open works immediately). Background is best effort — denial
+ * only logs a warning, never blocks usage.
  *
- * Flow: [request] เก็บ result ค้างไว้ → ระบบโชว์ dialog →
- * [onRequestPermissionsResult] ไล่จังหวะถัดไปหรือตอบ result แล้วเคลียร์
- * ต้องถูก add เป็น RequestPermissionsResultListener ผ่าน ActivityPluginBinding
+ * Flow: [request] parks the result → system shows the dialog →
+ * [onRequestPermissionsResult] advances to the next phase or answers the
+ * result and clears. Must be added as a RequestPermissionsResultListener
+ * via ActivityPluginBinding.
  */
 class PermissionManager : PluginRegistry.RequestPermissionsResultListener {
 
@@ -31,7 +35,7 @@ class PermissionManager : PluginRegistry.RequestPermissionsResultListener {
     private var pendingActivity: Activity? = null
 
     fun request(activity: Activity, result: MethodChannel.Result) {
-        // ตอบ result เดิมซ้ำ = crash — กันเรียกซ้อนตอนมี dialog ค้าง
+        // Answering the same result twice = crash — block re-entry while a dialog is pending
         if (pendingResult != null) {
             result.error(
                 "PERMISSION_REQUEST_IN_PROGRESS",
@@ -42,7 +46,7 @@ class PermissionManager : PluginRegistry.RequestPermissionsResultListener {
         }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            result.success(true) // ก่อน API 23 permission ให้ตอนติดตั้งแล้ว
+            result.success(true) // before API 23 permissions were granted at install
             return
         }
 
@@ -59,7 +63,7 @@ class PermissionManager : PluginRegistry.RequestPermissionsResultListener {
         activity.requestPermissions(missing.toTypedArray(), FOREGROUND_REQUEST_CODE)
     }
 
-    /** จังหวะ 2 — ขอ background location ถ้ายังไม่มี ไม่งั้นจบด้วย success */
+    /** Phase 2 — request background location if missing, otherwise finish with success */
     private fun requestBackgroundOrFinish(activity: Activity, result: MethodChannel.Result) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             activity.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
@@ -77,8 +81,8 @@ class PermissionManager : PluginRegistry.RequestPermissionsResultListener {
         )
     }
 
-    // API 31+: BLUETOOTH_SCAN / ≤30: FINE_LOCATION (ไม่มีแล้วผล scan ว่างเงียบ ๆ)
-    // ขอ FINE_LOCATION บน 31+ ด้วยเพราะไม่ได้ใช้ neverForLocation (คำนวณ distance)
+    // API 31+: BLUETOOTH_SCAN / ≤30: FINE_LOCATION (without it results are silently empty)
+    // FINE_LOCATION is requested on 31+ too because neverForLocation isn't used (distance math)
     private fun foregroundPermissions(): List<String> =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             listOf(
@@ -119,8 +123,9 @@ class PermissionManager : PluginRegistry.RequestPermissionsResultListener {
                 val granted = grantResults.isNotEmpty() &&
                     grantResults.all { it == PackageManager.PERMISSION_GRANTED }
                 if (!granted) {
-                    // foreground ครบแล้ว scan ตอนเปิด app ใช้ได้ — เตือนไว้ว่า
-                    // background scan จะโดน gate จนกว่า user จะให้ "ตลอดเวลา"
+                    // Foreground set complete so scanning with the app open
+                    // works — warn that background scanning stays gated until
+                    // the user grants "all the time".
                     Log.w(
                         "PermissionManager",
                         "ACCESS_BACKGROUND_LOCATION denied — " +

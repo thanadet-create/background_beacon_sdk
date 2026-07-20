@@ -13,21 +13,24 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.FlutterCallbackInformation
 
 /**
- * รัน Dart callback ของ app โดยไม่มี UI — ทางเดินของ event ตอน app โดน kill
+ * Runs the app's Dart callback without UI — the event path when the app
+ * has been killed.
  *
- * Flow: BeaconScanReceiver ถูกปลุก (ไม่มี engine) → runner สร้าง FlutterEngine
- * → รัน `backgroundCallbackDispatcher` (Dart) ผ่าน callback handle ที่
- * persist ไว้ → queue event รอจน Dart ส่ง `backgroundReady` → flush
+ * Flow: BeaconScanReceiver wakes (no engine) → runner creates a
+ * FlutterEngine → runs `backgroundCallbackDispatcher` (Dart) via the
+ * persisted callback handle → queues events until Dart sends
+ * `backgroundReady` → flush.
  *
- * Engine ถูก cache ไว้ตลอดอายุ process — batch ถัดไป (ทุก ~scanIntervalMs)
- * ไม่ต้องจ่ายค่า spin-up ใหม่ (หลายร้อย ms) OS จะเก็บ process เองเมื่อ RAM ตึง
+ * The engine is cached for the process lifetime — the next batch (every
+ * ~scanIntervalMs) skips the spin-up cost (hundreds of ms). The OS reclaims
+ * the process itself under memory pressure.
  *
- * State machine enter/exit ที่นี่ persist ใน BeaconStore (คนละชุดกับ
- * RegionStateTracker ของ in-process mode) — หลัง process ตาย state เริ่มว่าง
- * beacon ที่ยังอยู่ในเขตจะได้ enter ซ้ำหนึ่งครั้ง: ยอมรับ, จดใน README
+ * The enter/exit state machine here persists in BeaconStore (separate from
+ * in-process RegionStateTracker) — after process death state starts empty,
+ * so beacons still in range get one repeat enter: accepted, noted in docs.
  *
- * Thread: ทุกอย่างบน main thread (receiver + engine + channel callback
- * อยู่ main อยู่แล้ว) — ไม่มี lock
+ * Thread: everything on main (receiver + engine + channel callbacks already
+ * live there) — no locks.
  */
 internal object HeadlessBeaconRunner {
 
@@ -37,28 +40,29 @@ internal object HeadlessBeaconRunner {
     private var channel: MethodChannel? = null
     private var dartReady = false
 
-    /** event ที่มาก่อน Dart พร้อม — flush ตอน backgroundReady */
+    /** Events arriving before Dart is ready — flushed on backgroundReady */
     private val queuedEvents = mutableListOf<Map<String, Any>>()
 
-    /** goAsync window ที่รอ event ของตัวเอง flush — ปิดพร้อมกันตอน flush สำเร็จ */
+    /** goAsync windows waiting for their events to flush — all closed once the flush succeeds */
     private val pendingCompletions = mutableListOf<Completion>()
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
-     * ประมวลผล batch จาก PendingIntent scan ในโหมดไม่มี engine หลัก
-     * [onComplete] ถูกเรียกเสมอ (งานเสร็จ/ผิดพลาด/timeout) — receiver ใช้ปิด
-     * goAsync window
+     * Process a batch from the PendingIntent scan when no main engine exists.
+     * [onComplete] is always invoked (done/error/timeout) — the receiver
+     * uses it to close the goAsync window.
      */
     fun dispatch(context: Context, results: List<ScanResult>, onComplete: () -> Unit) {
         val completion = Completion(onComplete)
-        // เพดานกันค้าง: handle เสีย/Dart ไม่ตอบ — ปล่อย receiver จบก่อน OS ฆ่า
+        // Hang guard: broken handle / unresponsive Dart — release the
+        // receiver before the OS kills it.
         mainHandler.postDelayed({ completion.complete() }, COMPLETE_TIMEOUT_MS)
 
         val appContext = context.applicationContext
         val handles = BeaconStore.loadCallbackHandles(appContext)
         if (handles == null) {
-            completion.complete() // app ไม่เคย register — ไม่มีอะไรให้ทำ
+            completion.complete() // app never registered — nothing to do
             return
         }
 
@@ -76,17 +80,18 @@ internal object HeadlessBeaconRunner {
 
         ensureEngine(appContext, dispatcherHandle = handles.first)
         if (engine == null) {
-            completion.complete() // handle เสีย — queue ถูกทิ้งแล้ว
+            completion.complete() // stale handle — queue already dropped
             return
         }
 
-        // ปิด window เมื่อ event ถูก flush จริง (Dart ready) — ห้ามปิดตรงนี้:
-        // engine เพิ่ง spin-up dartReady ยัง false, ปิดก่อน = process ตายก่อนส่ง
+        // Close the window only when events actually flush (Dart ready) —
+        // never here: the engine just spun up and dartReady is still false;
+        // closing early kills the process before delivery.
         pendingCompletions.add(completion)
         flushIfReady()
     }
 
-    /** สร้าง enter/ranged/exit จาก batch + inside-state ที่ persist ไว้ */
+    /** Build enter/ranged/exit from the batch + persisted inside-state */
     private fun buildEvents(
         context: Context,
         results: List<ScanResult>,
@@ -99,7 +104,7 @@ internal object HeadlessBeaconRunner {
         val now = System.currentTimeMillis()
         val events = mutableListOf<BeaconEventData>()
 
-        // sighting ราย beacon (dedupe key เดียวกับ in-process mode เก็บค่าอ่านล่าสุด)
+        // Per-beacon sightings (same dedupe key as in-process mode, latest reading kept)
         val sightings = LinkedHashMap<String, Pair<String, BeaconData>>()
         results.forEach { result ->
             val beacon = BeaconParser.parse(result) ?: return@forEach
@@ -123,8 +128,8 @@ internal object HeadlessBeaconRunner {
                 }
         }
 
-        // exit เช็คได้เฉพาะตอนถูกปลุก — ถ้าไม่มี beacon ไหนปลุกเลย exit จะค้าง
-        // จนกว่า process ถูกปลุกครั้งถัดไปหรือ app เปิด (จดใน README)
+        // Exit can only be checked when woken — with no beacon waking us,
+        // exits hang until the next wake or the app opens (documented).
         insideState.filterValues { now - it > settings.exitTimeoutMs }.keys.forEach {
             insideState.remove(it)
             events.add(BeaconEventData("exitRegion", it, emptyList()))
@@ -137,9 +142,10 @@ internal object HeadlessBeaconRunner {
     private fun ensureEngine(context: Context, dispatcherHandle: Long) {
         if (engine != null) return
 
-        // loader ต้องมาก่อน lookupCallbackInformation — ตัว lookup เรียก native
-        // เข้า libflutter.so ซึ่ง process ที่เพิ่งถูกปลุกยังไม่ได้ load
-        // (สลับลำดับ = UnsatisfiedLinkError → crash loop → OS แบนการปลุก)
+        // The loader must come before lookupCallbackInformation — lookup
+        // calls native into libflutter.so, which a freshly woken process has
+        // not loaded yet (swap the order = UnsatisfiedLinkError → crash loop
+        // → OS bans the wake-ups).
         val loader = FlutterInjector.instance().flutterLoader()
         if (!loader.initialized()) {
             loader.startInitialization(context)
@@ -148,7 +154,8 @@ internal object HeadlessBeaconRunner {
 
         val callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(dispatcherHandle)
         if (callbackInfo == null) {
-            // app ถูก build ใหม่แล้ว handle เก่าชี้มั่ว — ต้องรอ register รอบใหม่
+            // The app was rebuilt and the old handle points nowhere — wait
+            // for the next register.
             Log.w(TAG, "stale dispatcher handle; dropping ${queuedEvents.size} event(s)")
             queuedEvents.clear()
             return
@@ -186,9 +193,9 @@ internal object HeadlessBeaconRunner {
         val events = queuedEvents.toList()
         queuedEvents.clear()
 
-        // ปิด goAsync window หลัง Dart ประมวลผล "เสร็จจริง" เท่านั้น —
-        // fire-and-forget แล้วปิดเลย = process โดนเก็บก่อนงานฝั่ง Dart
-        // (เช่นโพสต์ notification) จะจบ
+        // Close the goAsync window only after Dart has truly finished —
+        // fire-and-forget then close = the process gets reclaimed before
+        // Dart-side work (e.g. posting a notification) completes.
         var remaining = events.size
         val ack = {
             remaining--
@@ -203,7 +210,7 @@ internal object HeadlessBeaconRunner {
         }
     }
 
-    /** ปล่อย window พร้อม grace สั้น ๆ — เผื่องาน async ฝั่ง Dart ที่ไม่ได้ await */
+    /** Release windows with a short grace — covers Dart async work that wasn't awaited */
     private fun releaseCompletions() {
         if (pendingCompletions.isEmpty()) return
         val completions = pendingCompletions.toList()
@@ -211,7 +218,7 @@ internal object HeadlessBeaconRunner {
         mainHandler.postDelayed({ completions.forEach { it.complete() } }, RELEASE_GRACE_MS)
     }
 
-    /** กัน onComplete ถูกเรียกซ้ำ (ทางปกติ + timeout) — finish() ซ้ำ = crash */
+    /** Guards onComplete from double invocation (normal path + timeout) — a repeated finish() crashes */
     private class Completion(private val run: () -> Unit) {
         private var done = false
         fun complete() {

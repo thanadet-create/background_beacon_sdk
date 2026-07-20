@@ -5,8 +5,8 @@ import android.content.pm.PackageManager
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 
-// ตรวจว่า device เป็น GMS หรือ HMS — หัวใจของ "detect os เอง"
-// ค่าที่คืนคือ wire contract กับ Dart PlatformDetector: "gms" | "hms"
+// Detects whether the device is GMS or HMS — the heart of platform auto-detect.
+// Return values are the wire contract with Dart's PlatformDetector: "gms" | "hms"
 object MobileServicesDetector {
 
     fun detect(context: Context): String {
@@ -14,13 +14,13 @@ object MobileServicesDetector {
             .isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
         if (gms) return "gms"
 
-        // HMS Core ติดตั้งเป็น package "com.huawei.hwid" — เช็คผ่าน PackageManager
-        // ตรง ๆ ไม่ต้องพึ่ง Huawei SDK/maven repo
+        // HMS Core installs as package "com.huawei.hwid" — check straight
+        // through PackageManager, no Huawei SDK/maven repo needed.
         return try {
             context.packageManager.getPackageInfo("com.huawei.hwid", 0)
             "hms"
         } catch (e: PackageManager.NameNotFoundException) {
-            "gms" // ไม่มีทั้งคู่ → เส้น gms (BLE scan ไม่ได้พึ่ง Google lib อยู่แล้ว)
+            "gms" // neither present → gms path (BLE scanning never needed Google libs anyway)
         }
     }
 }

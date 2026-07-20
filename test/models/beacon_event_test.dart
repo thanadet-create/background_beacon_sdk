@@ -35,12 +35,12 @@ void main() {
     });
 
     test('type serializes as enum name without class prefix', () {
-      // wire contract กับ native: Kotlin/Swift ส่งแค่ "enterRegion" ไม่ใช่ "BeaconEventType.enterRegion"
+      // Wire contract with native: Kotlin/Swift send just "enterRegion", not "BeaconEventType.enterRegion"
       expect(event.toMap()['type'], 'enterRegion');
     });
 
     test('fromMap accepts nested beacons as Map<Object?, Object?> from codec', () {
-      // StandardMethodCodec decode map เป็น Map<Object?, Object?> ไม่ใช่ Map<String, dynamic>
+      // StandardMethodCodec decodes maps as Map<Object?, Object?>, not Map<String, dynamic>
       final map = event.toMap();
       map['beacons'] = (map['beacons'] as List)
           .map((b) => Map<Object?, Object?>.from(b as Map))
@@ -52,7 +52,7 @@ void main() {
     });
 
     test('unknown type string throws', () {
-      // behavior ที่เลือกไว้: type ที่ไม่รู้จัก = contract พัง ให้ fail ดัง ๆ ไม่เงียบ
+      // Chosen behavior: an unknown type = broken contract — fail loudly, never silently
       final map = event.toMap()..['type'] = 'teleported';
 
       expect(() => BeaconEvent.fromMap(map), throwsArgumentError);

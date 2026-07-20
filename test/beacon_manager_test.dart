@@ -12,10 +12,10 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import 'test_uuid.dart';
 
-/// top-level จริง — PluginUtilities หา handle ให้ได้ (closure ไม่ได้)
+/// Genuinely top-level — PluginUtilities can find a handle (closures can't)
 void topLevelBackgroundCallback(BeaconEvent event) {}
 
-/// Mock เต็มตัว — จำ arguments ที่ถูกส่งเข้ามา และยิง event ปลอมได้
+/// Full mock — remembers received arguments and can fire fake events
 class MockPlatform extends BackgroundBeaconPlatform
     with MockPlatformInterfaceMixin {
   String services = 'gms';
@@ -162,7 +162,7 @@ void main() {
         () async {
       await manager.registerBackgroundCallback(topLevelBackgroundCallback);
 
-      // ค่า handle เป็น opaque — เช็คแค่ว่าส่งครบสองตัวและไม่ใช่ตัวเดียวกัน
+      // Handles are opaque — just check both were sent and they differ
       expect(mock.lastDispatcherHandle, isNotNull);
       expect(mock.lastCallbackHandle, isNotNull);
       expect(mock.lastDispatcherHandle, isNot(mock.lastCallbackHandle));

@@ -1,40 +1,22 @@
 import CoreLocation
 
-/**
- * Core logic ฝั่ง iOS — CLLocationManager + CLBeaconRegion
- *
- * Background strategy (ต่างจาก Android):
- * - region monitoring: OS ทำให้ระดับ hardware ทำงานแม้ app โดน kill แล้วปลุกให้
- *   → ไม่ต้องมี state machine / duty cycle เองแบบฝั่ง Kotlin
- * - ranging: ได้เฉพาะ foreground หรือช่วงสั้น ๆ (~10 วิ) หลังถูกปลุก
- * - เพดาน 20 regions ต่อ app — เช็คก่อน start ไม่งั้น OS fail เงียบ
- *
- * Event mapping:
- * - didDetermineState/didEnter/didExit ทุกทางวิ่งเข้า handleTransition เดียว
- *   แล้ว dedupe ด้วย insideRegions (OS ยิงได้หลาย callback ต่อการข้ามเขตครั้งเดียว)
- * - enterRegion ฝั่ง iOS beacons ว่างเสมอ — monitoring รู้แค่ "เข้าเขต"
- *   รายละเอียดราย beacon ต้องรอ ranging (wire contract อนุญาต list ว่าง)
- *
- * Thread: CL delegate callback มาบน thread ที่สร้าง manager (main) —
- * state ทั้งหมดจึงแตะจาก main เท่านั้น ไม่ต้องมี lock
- */
 final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
 
-    /// Plugin ต่อท่อนี้เข้า EventChannel — เรียกบน main thread
     var onEvent: (([String: Any]) -> Void)?
 
     private let manager = CLLocationManager()
 
-    /// identifier → region ที่ monitor อยู่ (ใช้ map constraint กลับเป็น identifier)
+    /// identifier
     private var regions: [String: BeaconRegionData] = [:]
 
-    /// identifier → constraint ตัวจริงที่ใช้ start ranging — ต้องเก็บ instance เดิม:
-    /// CLBeaconIdentityConstraint เป็น NSObject เทียบกันด้วย identity
-    /// สร้างใหม่จาก field เดิมแล้ว stopRanging อาจหาตัว match ไม่เจอ
     private var regionConstraints: [String: CLBeaconIdentityConstraint] = [:]
     private var rangingEnabled = false
+    private var continuousRanging = false
     private var keepAliveActive = false
     private var insideRegions: Set<String> = []
+
+    private var cycleSightings: [String: (region: String, beacon: [String: Any])] = [:]
+    private var flushTimer: Timer?
 
     private struct PendingDetect {
         let region: BeaconRegionData
@@ -47,8 +29,6 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
 
     override init() {
         super.init()
-        // ตั้ง delegate ตั้งแต่เกิด — ตอน OS relaunch app จาก region event
-        // (app โดน kill) CL จะส่ง event ค้างมาทันทีที่มี delegate รอรับ
         manager.delegate = self
     }
 
@@ -67,27 +47,24 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
         guard regions.count <= 20 else {
             throw MonitorError.tooManyRegions(regions.count)
         }
-        stopMonitoring() // contract ฝั่ง Dart: เรียกซ้ำ = แทนที่ชุดเดิมทั้งหมด
+        stopMonitoring()
 
         rangingEnabled = settings.rangingEnabled
+        continuousRanging = settings.continuousRanging
         for region in regions {
             self.regions[region.identifier] = region
             regionConstraints[region.identifier] = region.constraint
             let clRegion = region.clRegion
             manager.startMonitoring(for: clRegion)
-            // ถ้ายืนอยู่ในเขตอยู่แล้วให้รู้เลย — didEnterRegion ยิงเฉพาะตอน "ข้ามเขต"
             manager.requestState(for: clRegion)
         }
 
-        if settings.rangingEnabled && settings.continuousRanging {
-            startKeepAlive()
+        if settings.rangingEnabled {
+            startFlushTimer(intervalMs: settings.scanIntervalMs)
         }
     }
 
     func stopMonitoring() {
-        // กวาดจาก OS ไม่ใช่จาก dict ตัวเอง — region persist ข้าม launch
-        // อาจมีชุดค้างจากรอบก่อน app ตาย (จำกัดเฉพาะ CLBeaconRegion —
-        // ไม่แตะ geofence อื่นของ app)
         for case let region as CLBeaconRegion in manager.monitoredRegions {
             manager.stopMonitoring(for: region)
         }
@@ -95,22 +72,43 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
             manager.stopRangingBeacons(satisfying: constraint)
         }
         stopKeepAlive()
+        stopFlushTimer()
         regions.removeAll()
         regionConstraints.removeAll()
         insideRegions.removeAll()
         rangingEnabled = false
+        continuousRanging = false
+    }
+
+    // MARK: - ranged aggregation
+    private func flushRanged() {
+        guard !cycleSightings.isEmpty else { return }
+        var byRegion: [String: [[String: Any]]] = [:]
+        for entry in cycleSightings.values {
+            byRegion[entry.region, default: []].append(entry.beacon)
+        }
+        cycleSightings.removeAll()
+        for (region, beacons) in byRegion {
+            onEvent?(eventMap(type: "ranged", region: region, beacons: beacons))
+        }
+    }
+
+    private func startFlushTimer(intervalMs: Int) {
+        flushTimer = Timer.scheduledTimer(
+            withTimeInterval: TimeInterval(intervalMs) / 1000, repeats: true
+        ) { [weak self] _ in
+            self?.flushRanged()
+        }
+    }
+
+    private func stopFlushTimer() {
+        flushTimer?.invalidate()
+        flushTimer = nil
+        cycleSightings.removeAll()
     }
 
     // MARK: - continuous ranging keep-alive
-
-    /// กัน app โดน suspend ด้วย location updates ค้างไว้ — app ตื่นตลอด
-    /// ranging จึงไหลต่อตอน background (เทคนิคเดียวกับ app นำทาง)
-    ///
-    /// ตำแหน่งจริงไม่ได้ใช้ — ตั้ง accuracy หยาบสุด + distanceFilter ไกลสุด
-    /// ให้ radio ตำแหน่งทำงานน้อยที่สุด ต้นทุนหลักที่เหลือคือ process ที่ไม่หลับ
     private func startKeepAlive() {
-        // allowsBackgroundLocationUpdates โดยไม่มี background mode = crash ทันที
-        // เช็คก่อนแล้ว fail เสียงดังแบบไม่พัง (Dart แก้อะไรไม่ได้ — เป็น config ของ app)
         guard let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes")
             as? [String], modes.contains("location")
         else {
@@ -134,7 +132,6 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
         keepAliveActive = false
     }
 
-    /// one-shot: ranging constraint ชั่วคราวจนเจอหรือครบ timeout — callback บน main
     func detectBeacon(
         region: BeaconRegionData,
         timeoutMs: Int,
@@ -150,21 +147,18 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
         pendingDetects.append(PendingDetect(
             region: region, constraint: constraint, callback: callback, timeout: timeout))
 
-        // startRanging ซ้ำ constraint ที่ range อยู่แล้ว = no-op ปลอดภัย
         manager.startRangingBeacons(satisfying: constraint)
         DispatchQueue.main.asyncAfter(
             deadline: .now() + .milliseconds(timeoutMs), execute: timeout)
     }
 
     // MARK: - CLLocationManagerDelegate
-
     func locationManager(
         _ manager: CLLocationManager,
         didDetermineState state: CLRegionState,
         for region: CLRegion
     ) {
         guard let beaconRegion = region as? CLBeaconRegion else { return }
-        // .unknown = ยังตัดสินไม่ได้ — อย่าตีความเป็น exit
         guard state != .unknown else { return }
         handleTransition(identifier: beaconRegion.identifier, inside: state == .inside)
     }
@@ -188,10 +182,10 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
 
         guard rangingEnabled, !beacons.isEmpty else { return }
         guard let identifier = identifier(for: constraint) else { return }
-        onEvent?(eventMap(
-            type: "ranged",
-            region: identifier,
-            beacons: beacons.map(beaconMap)))
+        for beacon in beacons {
+            let key = "\(beacon.uuid.uuidString)/\(beacon.major)/\(beacon.minor)"
+            cycleSightings[key] = (region: identifier, beacon: beaconMap(beacon))
+        }
     }
 
     func locationManager(
@@ -199,23 +193,23 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
         monitoringDidFailFor region: CLRegion?,
         withError error: Error
     ) {
-        // fail หลัง start ไปแล้ว — ไม่มี result ให้ตอบกลับ Dart ได้ log ไว้พอ
         NSLog("[background_beacon_sdk] monitoring failed for %@: %@",
               region?.identifier ?? "?", error.localizedDescription)
     }
 
     // MARK: - internals
-
     private func handleTransition(identifier: String, inside: Bool) {
         guard let region = regions[identifier] else { return }
 
         if inside {
-            // dedupe: didEnterRegion + didDetermineState(.inside) มาคู่กันได้
             guard !insideRegions.contains(identifier) else { return }
             insideRegions.insert(identifier)
             onEvent?(eventMap(type: "enterRegion", region: identifier, beacons: []))
             if rangingEnabled, let constraint = regionConstraints[identifier] {
                 manager.startRangingBeacons(satisfying: constraint)
+            }
+            if rangingEnabled && continuousRanging && !keepAliveActive {
+                startKeepAlive()
             }
         } else {
             guard insideRegions.remove(identifier) != nil else { return }
@@ -223,10 +217,12 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
             if let constraint = regionConstraints[identifier] {
                 stopRangingIfUnused(constraint)
             }
+            if insideRegions.isEmpty {
+                stopKeepAlive()
+            }
         }
     }
 
-    /// เทียบ constraint ด้วยค่า field — `==` ของ NSObject เป็น identity ใช้ไม่ได้
     private func sameConstraint(
         _ a: CLBeaconIdentityConstraint,
         _ b: CLBeaconIdentityConstraint
@@ -254,7 +250,6 @@ final class BeaconMonitor: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    /// หยุด ranging constraint นี้เฉพาะเมื่อไม่มี monitoring/detect อื่นใช้ร่วมอยู่
     private func stopRangingIfUnused(_ constraint: CLBeaconIdentityConstraint) {
         let usedByMonitoring = rangingEnabled && insideRegions.contains { identifier in
             guard let active = regionConstraints[identifier] else { return false }

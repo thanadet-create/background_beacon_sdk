@@ -2,15 +2,16 @@ import Flutter
 import UIKit
 
 /**
- * Entry point ฝั่ง iOS — ชื่อ class ต้องตรง `pluginClass` ใน pubspec.yaml
+ * iOS entry point — class name must match `pluginClass` in pubspec.yaml.
  *
- * หน้าที่: รับ channel call → แปลง Map ↔ struct → delegate ไป BeaconMonitor
- * ห้ามมี CoreLocation logic ที่นี่ (อยู่ BeaconMonitor)
+ * Job: receive channel calls → convert Map ↔ struct → delegate to
+ * BeaconMonitor. No CoreLocation logic here (that lives in BeaconMonitor).
  *
- * Relaunch จาก region event (app โดน kill): ไม่ต้อง handle launchOptions เอง —
- * GeneratedPluginRegistrant เรียก register ตอน engine ขึ้น → BeaconMonitor
- * ถูกสร้างพร้อม delegate ทันที CL จะส่ง event ค้างมาให้เอง
- * event ที่มาก่อน Dart เริ่ม listen ถูก buffer ไว้ flush ตอน onListen
+ * Relaunch from a region event (app killed): no launchOptions handling
+ * needed — GeneratedPluginRegistrant calls register as the engine comes up,
+ * so BeaconMonitor exists with its delegate immediately and CL delivers the
+ * pending event on its own. Events arriving before Dart starts listening
+ * are buffered and flushed in onListen.
  */
 public class BackgroundBeaconSdkPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
@@ -19,7 +20,6 @@ public class BackgroundBeaconSdkPlugin: NSObject, FlutterPlugin, FlutterStreamHa
 
     private var eventSink: FlutterEventSink?
 
-    /// Event ที่เกิดก่อน Dart listen (ช่วง relaunch) — กันหายช่วง race
     private var pendingEvents: [[String: Any]] = []
 
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -86,9 +86,6 @@ public class BackgroundBeaconSdkPlugin: NSObject, FlutterPlugin, FlutterStreamHa
             return
         }
 
-        // wildcard (uuid == null) ใช้ได้เฉพาะ Android — iOS บังคับรู้ UUID ล่วงหน้า
-        // (CLBeaconRegion ไม่มีทางสร้างโดยไม่มี UUID) แจ้ง error ตรง ๆ
-        // ดีกว่าปล่อยหลุดไปเป็น "Invalid region"
         guard !regionMaps.contains(where: { !($0["uuid"] is String) }) else {
             result(FlutterError(
                 code: "START_FAILED",
@@ -117,7 +114,6 @@ public class BackgroundBeaconSdkPlugin: NSObject, FlutterPlugin, FlutterStreamHa
     private func send(_ event: [String: Any]) {
         guard let sink = eventSink else {
             pendingEvents.append(event)
-            // กัน buffer โตไม่หยุดถ้า Dart ไม่ listen เลย — ทิ้งตัวเก่าสุด
             if pendingEvents.count > Self.pendingEventLimit {
                 pendingEvents.removeFirst()
             }
@@ -143,6 +139,6 @@ public class BackgroundBeaconSdkPlugin: NSObject, FlutterPlugin, FlutterStreamHa
         return nil
     }
 
-    private static let detectTimeoutMs = 3000 // ตรงกับ DETECT_TIMEOUT_MS ฝั่ง Android
+    private static let detectTimeoutMs = 3000
     private static let pendingEventLimit = 100
 }

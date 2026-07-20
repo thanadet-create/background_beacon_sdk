@@ -10,18 +10,19 @@ import android.os.Build
 import android.os.IBinder
 
 /**
- * Foreground service สำหรับโหมด `foregroundServiceNotification = true`
+ * Foreground service for `foregroundServiceNotification = true` mode.
  *
- * ตัว service ไม่ scan เอง — หน้าที่เดียวคือถือ notification ค้างไว้ให้ process
- * รอด background restriction เพื่อให้ callback scan ของ BleBeaconScanner
- * (ที่รันใน process เดียวกัน) ทำงานต่อเนื่องได้ ranging ไม่ขาด
- * ถ้าไม่ต้อง ranging ต่อเนื่อง ใช้โหมด PendingIntent (BeaconScanReceiver) ประหยัดกว่า
+ * The service does not scan — its only job is holding the persistent
+ * notification so the process survives background restrictions, letting
+ * BleBeaconScanner's scan callbacks (same process) run continuously with
+ * uninterrupted ranging. If continuous ranging isn't needed, PendingIntent
+ * mode (BeaconScanReceiver) is cheaper.
  *
- * Notification เป็น "live status" แบบ app เพลง — scanner เรียก [update]
- * อัปเดตข้อความสด (อยู่เขตไหน เห็นกี่ beacon) บนกล่องเดิม
+ * The notification is a "live status" like a music app — the scanner calls
+ * [update] to refresh the text (which region, how many beacons) in place.
  *
- * API 34+ บังคับประกาศ foregroundServiceType ใน manifest (`location`) —
- * startForeground แบบ 2 arg จะใช้ type จาก manifest ให้เอง
+ * API 34+ requires foregroundServiceType in the manifest (`location`) —
+ * the 2-arg startForeground picks the type up from the manifest.
  */
 class BeaconForegroundService : Service() {
 
@@ -30,9 +31,10 @@ class BeaconForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, build(this, DEFAULT_TEXT))
         running = true
-        // ระบบ kill แล้ว restart service ได้ แต่ scan state ตายไปกับ process —
-        // START_NOT_STICKY: ให้ app เป็นคน startMonitoring ใหม่เอง ไม่ปล่อย
-        // service ซอมบี้ที่มี notification แต่ไม่มี scan
+        // The system may restart a killed service, but scan state died with
+        // the process — START_NOT_STICKY: let the app call startMonitoring
+        // again itself rather than leaving a zombie service with a
+        // notification and no scan.
         return START_NOT_STICKY
     }
 
@@ -46,7 +48,7 @@ class BeaconForegroundService : Service() {
         private const val NOTIFICATION_ID = 57111
         private const val DEFAULT_TEXT = "กำลังหา beacon…"
 
-        /** service ถืออยู่ไหม — [update] ก่อน start จะกลายเป็น notification หลงทาง */
+        /** Is the service holding the notification — [update] before start would post a stray one */
         @Volatile
         private var running = false
 
@@ -65,8 +67,9 @@ class BeaconForegroundService : Service() {
         }
 
         /**
-         * อัปเดตข้อความบนกล่องเดิม (id เดียว = แทนที่ ไม่กอง) — เรียกถี่ได้
-         * IMPORTANCE_LOW ไม่มีเสียง/ไม่เด้งซ้ำ user เห็นแค่ข้อความเปลี่ยน
+         * Update the text on the same notification (one id = replace, not
+         * stack) — safe to call often. IMPORTANCE_LOW means no sound or
+         * re-alert; the user just sees the text change.
          */
         fun update(context: Context, text: String) {
             if (!running) return
@@ -79,11 +82,11 @@ class BeaconForegroundService : Service() {
                 val channel = NotificationChannel(
                     CHANNEL_ID,
                     "Beacon scanning",
-                    // IMPORTANCE_LOW: โชว์ใน drawer แต่ไม่มีเสียง/เด้ง — กล่องนี้
-                    // เป็นข้อบังคับของ foreground service ไม่ใช่ข่าวด่วน
+                    // IMPORTANCE_LOW: visible in the drawer, no sound/heads-up —
+                    // this notification is an FGS requirement, not breaking news
                     NotificationManager.IMPORTANCE_LOW,
                 )
-                // idempotent — เรียกซ้ำระบบ ignore
+                // idempotent — repeated calls are ignored by the system
                 (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                     .createNotificationChannel(channel)
                 Notification.Builder(context, CHANNEL_ID)
@@ -92,13 +95,13 @@ class BeaconForegroundService : Service() {
                 Notification.Builder(context)
             }
 
-            // plugin ไม่มี drawable ของตัวเอง — ยืม icon ของ app ที่ฝังเราไป
+            // The plugin ships no drawable — borrow the host app's icon
             return builder
                 .setSmallIcon(context.applicationInfo.icon)
                 .setContentTitle("Beacon monitoring")
                 .setContentText(text)
                 .setOngoing(true)
-                // กันกระพริบตอน update ถี่ ๆ
+                // Prevents flicker on frequent updates
                 .setOnlyAlertOnce(true)
                 .build()
         }

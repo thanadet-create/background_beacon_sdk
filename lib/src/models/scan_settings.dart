@@ -1,6 +1,9 @@
 class ScanSettings {
   final int scanIntervalMs;
   final int scanDurationMs;
+
+  /// Android: true = foreground service (persistent notification) +
+  /// duty cycle scan / false = PendingIntent scan
   final bool foregroundServiceNotification;
   final String beaconLayout;
   final bool rangingEnabled;

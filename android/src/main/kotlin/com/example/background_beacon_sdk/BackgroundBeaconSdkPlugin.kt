@@ -21,10 +21,10 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 
 /**
- * Entry point ฝั่ง Android — ชื่อ class ต้องตรง `pluginClass` ใน pubspec.yaml
+ * Android entry point — class name must match `pluginClass` in pubspec.yaml.
  *
- * หน้าที่: รับ channel call → แปลง Map ↔ data class → delegate ไป scanner
- * ห้ามมี scan logic ที่นี่ (อยู่ core/)
+ * Job: receive channel calls → convert Map ↔ data class → delegate to the
+ * scanner. No scan logic here (that lives in core/).
  */
 class BackgroundBeaconSdkPlugin :
     FlutterPlugin,
@@ -45,8 +45,8 @@ class BackgroundBeaconSdkPlugin :
     private var scanner: BeaconScanner? = null
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        // detect/scan ใช้ applicationContext — ไม่ต้องพึ่ง activity
-        // (activity จำเป็นเฉพาะ requestPermissions)
+        // detect/scan use applicationContext — no activity needed
+        // (an activity is required only for requestPermissions)
         context = binding.applicationContext
 
         methodChannel = MethodChannel(
@@ -62,13 +62,13 @@ class BackgroundBeaconSdkPlugin :
         eventChannel.setStreamHandler(this)
     }
 
-    /** สร้าง scanner ตามผล detect ครั้งแรกที่ต้องใช้ แล้ว reuse ตลอด engine */
+    /** Create the scanner from detect on first use, then reuse for the engine's lifetime */
     private fun ensureScanner(): BeaconScanner =
         scanner ?: when (MobileServicesDetector.detect(context)) {
             "hms" -> HmsBeaconScanner(context)
             else -> GmsBeaconScanner(context)
         }.also { created ->
-            // scan callback มาบน binder thread — eventSink ต้องถูกเรียกบน main
+            // Scan callbacks arrive on a binder thread — eventSink must be called on main
             created.setListener { event ->
                 mainHandler.post { eventSink?.success(event.toMap()) }
             }
@@ -112,7 +112,7 @@ class BackgroundBeaconSdkPlugin :
                 try {
                     @Suppress("UNCHECKED_CAST")
                     val region = BeaconRegionData.fromMap(call.arguments as Map<String, Any?>)
-                    // callback มาบน main thread แล้ว (สัญญาของ BeaconScanner.detectBeacon)
+                    // Callback already arrives on main (BeaconScanner.detectBeacon's contract)
                     ensureScanner().detectBeacon(region, DETECT_TIMEOUT_MS) { found ->
                         result.success(found)
                     }
@@ -122,7 +122,7 @@ class BackgroundBeaconSdkPlugin :
             }
 
             "registerBackgroundCallback" -> {
-                // channel ส่ง int เล็กมาเป็น Int ใหญ่มาเป็น Long — รับผ่าน Number
+                // The channel delivers small ints as Int, large as Long — accept via Number
                 val dispatcherHandle =
                     (call.argument<Number>("dispatcherHandle"))?.toLong()
                 val callbackHandle = (call.argument<Number>("callbackHandle"))?.toLong()
@@ -167,7 +167,7 @@ class BackgroundBeaconSdkPlugin :
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        scanner?.stopMonitoring() // engine ตาย scan ต้องไม่รั่วกินแบตต่อ
+        scanner?.stopMonitoring() // engine gone — the scan must not leak and keep draining battery
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
     }

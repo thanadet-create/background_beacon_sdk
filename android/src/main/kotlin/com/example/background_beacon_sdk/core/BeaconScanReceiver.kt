@@ -9,22 +9,24 @@ import android.os.Build
 import android.util.Log
 
 /**
- * ปลายทางของ BLE scan แบบ PendingIntent (API 26+) — กลไก background หลัก
- * ระบบ scan ให้ต่อเนื่องระดับ OS แล้วปลุก receiver ส่งผลเป็น batch
- * ตาม reportDelay ที่ตั้งไว้ (ดู PendingIntentScan.start)
+ * Destination of the PendingIntent BLE scan (API 26+) — the main background
+ * mechanism. The OS scans continuously on our behalf and wakes this
+ * receiver with batched results per the configured reportDelay
+ * (see PendingIntentScan.start).
  *
- * สองทางออกตามสภาพ process:
- * - engine หลักยังอยู่ (app เปิด/background ปกติ) → ส่งเข้า [ScanSession]
- *   scanner เดิมประมวลผล event ไหลขึ้น EventChannel ตามปกติ
- * - process เพิ่งถูกปลุกใหม่ (app โดน kill) → [HeadlessBeaconRunner]
- *   สร้าง background engine แล้วเรียก Dart callback ที่ app ลงทะเบียนไว้
+ * Two paths depending on process state:
+ * - main engine alive (app open / normal background) → hand off to
+ *   [ScanSession]; the existing scanner processes it and events flow up
+ *   the EventChannel as usual
+ * - process freshly woken (app killed) → [HeadlessBeaconRunner] spins up a
+ *   background engine and invokes the Dart callback the app registered
  */
 class BeaconScanReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        // error code มาแทนผล scan เมื่อระบบยกเลิก scan (เช่น Bluetooth ถูกปิด)
-        // ไม่มีช่องรายงานกลับ Dart จาก receiver — log ให้เห็นใน logcat,
-        // scan รอบใหม่ต้อง start ใหม่
+        // An error code arrives instead of results when the system cancels
+        // the scan (e.g. Bluetooth turned off). No channel back to Dart from
+        // a receiver — log to logcat; a new scan must be started explicitly.
         if (intent.hasExtra(BluetoothLeScanner.EXTRA_ERROR_CODE)) {
             Log.w(
                 "BeaconScanReceiver",
@@ -50,9 +52,9 @@ class BeaconScanReceiver : BroadcastReceiver() {
             return
         }
 
-        // headless: ขอ window เพิ่มจากระบบ (goAsync สูงสุด ~10 วิ) — สร้าง engine
-        // ครั้งแรกกินเวลาหลายร้อย ms ถ้าปล่อย onReceive จบเลย process อาจโดน
-        // เก็บก่อน event ถึง Dart
+        // Headless: request extra time from the system (goAsync, up to ~10 s)
+        // — first engine spin-up costs hundreds of ms; if onReceive returned
+        // immediately the process could be reclaimed before events reach Dart.
         val pendingResult = goAsync()
         HeadlessBeaconRunner.dispatch(context, results) { pendingResult.finish() }
     }
