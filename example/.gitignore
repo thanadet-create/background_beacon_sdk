@@ -44,6 +44,6 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Local config (dart-define-from-file) — commit เฉพาะ *.example
+# Local config (dart-define-from-file) — commit เฉพาะ example.json
 /config/*.json
-!/config/*.example
+!/config/example.json
